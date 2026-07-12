@@ -28,7 +28,11 @@ export function downloadAudio(
     p.on('error', reject)
     p.on('close', (code) => {
       if (code !== 0) return reject(new Error(`yt-dlp exit ${code}: ${err.slice(-2000)}`))
-      const files = readdirSync(opts.workDir).filter((f) => f !== 'wave.png' && !f.endsWith('.mp4'))
+      // Exclude our own render artifacts by exact name (they don't exist yet at
+      // download time, but be safe) and yt-dlp partial files — not all .mp4, since
+      // a non-SoundCloud `best` fallback can legitimately produce an .mp4 audio file.
+      const files = readdirSync(opts.workDir)
+        .filter((f) => f !== 'wave.png' && f !== 'out.mp4' && !f.endsWith('.part') && !f.endsWith('.ytdl'))
       if (files.length === 0) return reject(new Error('yt-dlp produced no audio file'))
       const file = join(opts.workDir, files[0])
       resolve({ file, title: basename(files[0], extname(files[0])) })

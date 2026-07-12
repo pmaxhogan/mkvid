@@ -27,15 +27,22 @@ export async function uploadVideo(
       callback(null, chunk)
     },
   })
-  const body = createReadStream(opts.filePath).pipe(progressTracker)
-  const res = await yt.videos.insert({
-    part: ['snippet', 'status'],
-    requestBody: {
-      snippet: { title: opts.title.slice(0, 100), description: opts.description, categoryId: opts.categoryId },
-      status: { privacyStatus: opts.privacy, selfDeclaredMadeForKids: false },
-    },
-    media: { body },
-  })
+  const fileStream = createReadStream(opts.filePath)
+  const body = fileStream.pipe(progressTracker)
+  let res
+  try {
+    res = await yt.videos.insert({
+      part: ['snippet', 'status'],
+      requestBody: {
+        snippet: { title: opts.title.slice(0, 100), description: opts.description, categoryId: opts.categoryId },
+        status: { privacyStatus: opts.privacy, selfDeclaredMadeForKids: false },
+      },
+      media: { body },
+    })
+  } catch (e) {
+    fileStream.destroy()  // release the fd if the upload fails early
+    throw e
+  }
   const videoId = res.data.id
   if (!videoId) throw new Error('youtube: no video id returned')
   return { videoId, videoUrl: `https://youtu.be/${videoId}` }
