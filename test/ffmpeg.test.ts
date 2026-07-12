@@ -30,7 +30,7 @@ describe('buildWavePicArgs', () => {
     expect(buildWavePicArgs('/a.m4a', '1280x720', '/w.png')).toEqual([
       '-nostdin', '-hide_banner', '-loglevel', 'warning', '-y',
       '-i', '/a.m4a', '-filter_complex', 'showwavespic=s=1280x720:colors=cyan',
-      '-frames:v', '1', '/w.png',
+      '-frames:v', '1', '-update', '1', '/w.png',
     ])
   })
 })
