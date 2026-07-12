@@ -8,10 +8,15 @@ export function uiRoutes(ctx: AppContext): Hono {
   app.get('/', (c) => {
     const t = ctx.tokens.load()
     const status = t ? { connected: true, channelTitle: t.channelTitle ?? null } : { connected: false }
+    // Never cache the authenticated, state-dependent shell — otherwise a browser
+    // (esp. Android Chrome's back-forward cache) or edge cache can serve a stale
+    // connected/not-connected page. no-store also disables bfcache.
+    c.header('Cache-Control', 'no-store')
     return c.html(PAGE_HTML(status, ctx.config.vapid?.publicKey ?? null))
   })
   app.get('/api/youtube/status', (c) => {
     const t = ctx.tokens.load()
+    c.header('Cache-Control', 'no-store')
     return c.json(t ? { connected: true, channelTitle: t.channelTitle ?? null } : { connected: false })
   })
   app.get('/sw.js', (c) => c.body(SERVICE_WORKER_JS, 200, { 'Content-Type': 'application/javascript' }))
