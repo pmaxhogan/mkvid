@@ -1,0 +1,23 @@
+# deps / build
+node_modules/
+dist/
+*.tsbuildinfo
+
+# secrets / env
+.env
+.env.*
+!.env.example
+.dev.vars
+*.local
+
+# data / runtime
+data/
+work/
+*.sqlite
+*.sqlite-*
+*.db
+
+# logs / os
+*.log
+.DS_Store
+Thumbs.db
