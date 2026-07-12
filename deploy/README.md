@@ -69,6 +69,11 @@ GHCR auth from the mounted `/root/.docker/config.json` (from the one-time
    Never `docker compose up -d`. Structural compose edits go through
    Apps → mkvid → Edit → Custom Config YAML.
 
+   **`.env` changes do NOT auto-deploy.** Watchtower only updates the *image*; it
+   clones the running container's env and does not re-read `env_file`. After
+   editing `/mnt/alpha/apps/mkvid/.env`, load it with a redeploy:
+   `ssh mnmserver "sudo midclt call app.redeploy mkvid"` (re-reads the env_file).
+
 10. **Verify:** open `https://mkvid.maxhogan.dev` → CF Access login → Connect
     YouTube → submit a short track → watch progress → confirm the private
     video + push notification.
