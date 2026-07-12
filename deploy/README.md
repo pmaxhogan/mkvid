@@ -33,8 +33,10 @@ GHCR auth from the mounted `/root/.docker/config.json` (from the one-time
 
 3. **Cloudflare Tunnel (one-time):** Zero Trust → Networks → Tunnels →
    existing tunnel → Public Hostnames → Add → `mkvid.maxhogan.dev` → service
-   `http://mkvid:8080` (container hostname on the shared network, matching
-   `container_name`).
+   `http://mkvid.ix-mkvid.svc.cluster.local:8080`. TrueNAS Custom Apps auto-join
+   the shared `apps-internal` network (via the dragonify sidecar) with the DNS
+   alias `<compose-service>.ix-<appname>.svc.cluster.local`, and the cloudflared
+   connector is on that network — the bare `http://mkvid:8080` does NOT resolve.
 
 4. **VAPID keys (one-time):** `npm run vapid` → put the public/private keys
    into `.env`.
