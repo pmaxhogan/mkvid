@@ -47,3 +47,14 @@ export async function uploadVideo(
   if (!videoId) throw new Error('youtube: no video id returned')
   return { videoId, videoUrl: `https://youtu.be/${videoId}` }
 }
+
+export async function addToPlaylist(accessToken: string, videoId: string, playlistId: string): Promise<void> {
+  const auth = new OAuth2Client()
+  auth.setCredentials({ access_token: accessToken })
+  // Cast: googleapis-common pins its own nested google-auth-library; runtime-identical. See uploadVideo.
+  const yt = google.youtube({ version: 'v3', auth: auth as any })
+  await yt.playlistItems.insert({
+    part: ['snippet'],
+    requestBody: { snippet: { playlistId, resourceId: { kind: 'youtube#video', videoId } } },
+  })
+}

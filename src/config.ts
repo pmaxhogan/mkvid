@@ -6,6 +6,7 @@ export interface Config {
   size: string
   defaultPrivacy: Privacy
   youtubeCategoryId: string
+  youtubePlaylistId: string
   cfAccess: { teamDomain: string; aud: string; allowedEmails: string[]; devBypass: boolean }
   google: { clientId: string; clientSecret: string; redirectBase: string }
   vapid: { publicKey: string; privateKey: string; subject: string } | null
@@ -30,6 +31,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     size: env.MKVID_SIZE || '1280x720',
     defaultPrivacy: (env.DEFAULT_PRIVACY as Privacy) || 'private',
     youtubeCategoryId: env.YOUTUBE_CATEGORY_ID || '10',
+    youtubePlaylistId: env.YOUTUBE_PLAYLIST_ID || '',
     cfAccess: {
       teamDomain: env.CF_ACCESS_TEAM_DOMAIN || '',
       aud: env.CF_ACCESS_AUD || '',
