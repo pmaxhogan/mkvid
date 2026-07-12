@@ -4,8 +4,10 @@ import type { Config } from '../config.js'
 import type { StoredTokens, TokenStore } from '../types.js'
 
 export const SCOPES = [
-  'https://www.googleapis.com/auth/youtube.upload',
-  'https://www.googleapis.com/auth/youtube.readonly',
+  // Manage scope: covers video upload, reading the channel, AND playlist writes
+  // (adding each upload to the configured playlist). Superset of youtube.upload +
+  // youtube.readonly — changing this requires re-consent (reconnect YouTube).
+  'https://www.googleapis.com/auth/youtube',
 ]
 
 export function makeOAuthClient(cfg: Config['google']): OAuth2Client {

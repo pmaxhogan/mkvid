@@ -6,7 +6,7 @@ import { downloadAudio } from './ytdlp.js'
 import { probeAudio } from './probe.js'
 import { chooseFps, chooseAudioArgs, renderVideo } from './ffmpeg.js'
 import { getValidAccessToken } from './google-oauth.js'
-import { uploadVideo } from './youtube.js'
+import { uploadVideo, addToPlaylist } from './youtube.js'
 import { sendPush } from './push.js'
 import { log } from './log.js'
 
@@ -59,6 +59,16 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
       (p) => emit({ type: 'progress', phase: 'upload', percent: p }),
     )
     jobs.setResult(jobId, videoId, videoUrl)
+    // Best-effort: add the upload to the configured playlist. A failure here (e.g.
+    // token lacks the playlist scope) must not fail an already-successful upload.
+    if (config.youtubePlaylistId) {
+      try {
+        await addToPlaylist(accessToken, videoId, config.youtubePlaylistId)
+        logLine(`added to playlist ${config.youtubePlaylistId}`)
+      } catch (e: any) {
+        logLine(`warning: could not add to playlist — ${String(e?.message || e).slice(0, 140)}`)
+      }
+    }
     setStatus('done')
     emit({ type: 'done', videoUrl })
     void sendPush(config.vapid, ctx.push.list(), { title: 'Upload complete', body: finalTitle, url: videoUrl },
