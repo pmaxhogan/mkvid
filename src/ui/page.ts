@@ -108,7 +108,25 @@ $('#f').addEventListener('submit', async (e) => {
   if(!r.ok){ alert('submit failed'); return; }
   const {id} = await r.json(); subscribe(id); refreshJobs();
 });
-const dc = $('#disconnect'); if(dc) dc.addEventListener('click', async ()=>{ await fetch('/oauth/disconnect',{method:'POST'}); location.href='/'; });
+// Always render the YouTube connection header from a FRESH status fetch, never
+// from the (possibly bfcached/stale) server-rendered HTML shell or URL params.
+function renderConn(s){
+  const el=$('#conn'); el.textContent='';
+  if(s && s.connected){
+    const span=document.createElement('span'); span.textContent='YouTube: ';
+    const b=document.createElement('b'); b.textContent=s.channelTitle||'connected'; span.appendChild(b);
+    el.appendChild(span); el.appendChild(document.createTextNode(' '));
+    const btn=document.createElement('button'); btn.id='disconnect'; btn.textContent='Disconnect';
+    btn.addEventListener('click', async ()=>{ btn.disabled=true; await fetch('/oauth/disconnect',{method:'POST'}); refreshConn(); });
+    el.appendChild(btn);
+  } else {
+    const a=document.createElement('a'); a.href='/oauth/start';
+    const btn=document.createElement('button'); btn.textContent='Connect YouTube';
+    a.appendChild(btn); el.appendChild(a);
+  }
+}
+async function refreshConn(){ try{ const r=await fetch('/api/youtube/status',{cache:'no-store'}); if(r.ok) renderConn(await r.json()); }catch(e){} }
+refreshConn();
 function urlB64ToU8(base64){ const pad='='.repeat((4-base64.length%4)%4);
   const b=(base64+pad).replace(/-/g,'+').replace(/_/g,'/'); const raw=atob(b);
   return Uint8Array.from([...raw].map(c=>c.charCodeAt(0))); }
