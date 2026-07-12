@@ -55,6 +55,23 @@ export function PAGE_HTML(
 <script>
 const VAPID = ${vapid};
 const $ = (s) => document.querySelector(s);
+// The ?yt=connected / ?yt_error params are one-shot signals from the OAuth
+// redirect. The connection status itself is server-rendered from the stored
+// token, so consume these into a brief toast and strip them from the URL — the
+// address bar must never disagree with the real state.
+(function(){
+  const p = new URLSearchParams(location.search);
+  if (p.has('yt') || p.has('yt_error')) {
+    const err = p.get('yt_error');
+    const note = document.createElement('div');
+    note.textContent = err ? ('YouTube connect failed: ' + err) : 'YouTube connected ✓';
+    note.style.cssText = 'margin:.5rem 0;padding:.4rem .6rem;border-radius:.4rem;background:'
+      + (err ? '#3a1f1f;color:#f2b8b8' : '#16311f;color:#8fe0a0');
+    $('header').after(note);
+    setTimeout(() => note.remove(), 4000);
+    history.replaceState(null, '', location.pathname);
+  }
+})();
 function bar(p){ return '<div class="bar"><i style="width:'+Math.max(0,p)+'%"></i></div>'; }
 function httpsLink(url, text){
   const a=document.createElement('a'); a.textContent=text; a.target='_blank'; a.rel='noopener';
@@ -91,7 +108,7 @@ $('#f').addEventListener('submit', async (e) => {
   if(!r.ok){ alert('submit failed'); return; }
   const {id} = await r.json(); subscribe(id); refreshJobs();
 });
-const dc = $('#disconnect'); if(dc) dc.addEventListener('click', async ()=>{ await fetch('/oauth/disconnect',{method:'POST'}); location.reload(); });
+const dc = $('#disconnect'); if(dc) dc.addEventListener('click', async ()=>{ await fetch('/oauth/disconnect',{method:'POST'}); location.href='/'; });
 function urlB64ToU8(base64){ const pad='='.repeat((4-base64.length%4)%4);
   const b=(base64+pad).replace(/-/g,'+').replace(/_/g,'/'); const raw=atob(b);
   return Uint8Array.from([...raw].map(c=>c.charCodeAt(0))); }
