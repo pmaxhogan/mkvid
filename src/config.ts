@@ -48,6 +48,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ffmpegPath: env.FFMPEG_PATH || 'ffmpeg',
     ffprobePath: env.FFPROBE_PATH || 'ffprobe',
     ytdlpPath: env.YTDLP_PATH || 'yt-dlp',
-    ffmpegAutoUpdate: env.FFMPEG_AUTOUPDATE ? truthy(env.FFMPEG_AUTOUPDATE) : true,
+    ffmpegAutoUpdate: env.FFMPEG_AUTOUPDATE ? truthy(env.FFMPEG_AUTOUPDATE) : false,
   }
 }

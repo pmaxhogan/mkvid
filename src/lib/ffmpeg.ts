@@ -22,8 +22,10 @@ export function chooseAudioArgs(codec: string): string[] {
 }
 
 export function buildWavePicArgs(input: string, size: string, outPng: string): string[] {
+  // `-update 1` is required by ffmpeg 7.x's image2 muxer to write a single PNG to a
+  // fixed (non-pattern) filename; without it newer builds warn/refuse.
   return ['-nostdin', '-hide_banner', '-loglevel', 'warning', '-y',
-    '-i', input, '-filter_complex', `showwavespic=s=${size}:colors=cyan`, '-frames:v', '1', outPng]
+    '-i', input, '-filter_complex', `showwavespic=s=${size}:colors=cyan`, '-frames:v', '1', '-update', '1', outPng]
 }
 
 export interface RenderArgs {
