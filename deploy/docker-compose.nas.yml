@@ -1,0 +1,42 @@
+services:
+  mkvid:
+    image: ghcr.io/pmaxhogan/mkvid:latest
+    container_name: mkvid
+    restart: unless-stopped
+    pull_policy: always
+    env_file: [/mnt/alpha/apps/mkvid/.env]
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - /mnt/alpha/apps/mkvid/data:/data
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video]
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
+
+  # Auto-deploy: polls GHCR and pulls+recreates mkvid when :latest changes
+  # (i.e. after a push to main triggers the build-image workflow). Scoped by
+  # label so it only ever touches the mkvid container.
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: mkvid-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker/config.json:/config.json:ro   # GHCR read auth
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_POLL_INTERVAL: "120"                # check GHCR every 2 min
+      WATCHTOWER_ROLLING_RESTART: "true"
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
