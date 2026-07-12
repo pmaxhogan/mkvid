@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { join } from 'node:path'
+import { rmSync } from 'node:fs'
 import type { Config } from './config.js'
 import type { TokenStore, KVCache } from './types.js'
 import { openDb } from './db/index.js'
@@ -31,5 +32,9 @@ export function buildContext(config: Config): AppContext {
   } as AppContext
   ctx.queue = new JobQueue((jobId) => runJob(ctx, jobId))
   ctx.jobs.markRunningInterrupted() // recover from a crash mid-job
+  // Reclaim disk from work dirs orphaned by a crash/kill (each can hold a ~0.3 GB mp4).
+  if (config.dataDir !== ':memory:') {
+    try { rmSync(join(config.dataDir, 'work'), { recursive: true, force: true }) } catch { /* ignore */ }
+  }
   return ctx
 }

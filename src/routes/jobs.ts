@@ -33,14 +33,17 @@ export function jobsRoutes(ctx: AppContext): Hono {
   app.get('/:id/events', (c) => {
     const id = c.req.param('id')
     return streamSSE(c, async (stream) => {
-      const off = ctx.hub.add(id, (m) => { void stream.writeSSE({ data: JSON.stringify(m) }) })
-      stream.onAbort(off)
-      const job = ctx.jobs.get(id)
-      if (job) await stream.writeSSE({ data: JSON.stringify({ type: 'status', status: job.status }) })
-      // keepalive until the client disconnects (empty log line is ignored client-side)
-      while (!stream.aborted) {
-        await stream.sleep(15000)
-        await stream.writeSSE({ data: JSON.stringify({ type: 'log', line: '' }) })
+      const off = ctx.hub.add(id, (m) => { stream.writeSSE({ data: JSON.stringify(m) }).catch(() => {}) })
+      try {
+        const job = ctx.jobs.get(id)
+        if (job) await stream.writeSSE({ data: JSON.stringify({ type: 'status', status: job.status }) })
+        // keepalive until the client disconnects (empty log line is ignored client-side)
+        while (!stream.aborted) {
+          await stream.sleep(15000)
+          await stream.writeSSE({ data: JSON.stringify({ type: 'log', line: '' }) })
+        }
+      } finally {
+        off()  // always unsubscribe: normal exit, abort, or a write rejection
       }
     })
   })

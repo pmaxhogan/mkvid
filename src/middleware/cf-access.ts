@@ -71,6 +71,7 @@ export async function verifyAccessJwt(
   if (!audMatches) throw new Error('jwt: bad aud')
   if (typeof claims.exp !== 'number' || claims.exp + SKEW < now) throw new Error('jwt: expired')
   if (typeof claims.nbf === 'number' && claims.nbf - SKEW > now) throw new Error('jwt: not yet valid')
+  if (typeof claims.iat === 'number' && claims.iat - SKEW > now) throw new Error('jwt: iat in future')
   if (!claims.email) throw new Error('jwt: missing email')
   return { email: claims.email.toLowerCase() }
 }
