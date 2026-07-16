@@ -3,7 +3,10 @@ import { basename, extname } from 'node:path'
 // Job.url marker for direct uploads (vs. a real URL handed to yt-dlp).
 export const UPLOAD_PREFIX = 'upload://'
 
-export const MAX_UPLOAD_BYTES = 300 * 1024 * 1024
+// Chunked uploads append to disk (one ~24MB chunk in memory at a time), so this
+// can be generous. The multipart path buffers the whole file — it gets MAX_MULTIPART_BYTES.
+export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+export const MAX_MULTIPART_BYTES = 100 * 1024 * 1024
 
 // Containers ffmpeg decodes that plausibly hold audio. .webm/.mp4/.m4a can be
 // audio-only; ffprobe rejects anything that isn't decodable audio downstream.

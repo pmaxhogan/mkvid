@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync, renameSync, rmSync, statSync } from 'node:fs'
 import { join, extname, basename, dirname } from 'node:path'
 import { z } from 'zod'
 import type { AppContext } from '../context.js'
-import { UPLOAD_PREFIX, MAX_UPLOAD_BYTES, isAllowedAudioExt, sanitizeUploadName } from '../lib/upload.js'
+import { UPLOAD_PREFIX, MAX_MULTIPART_BYTES, isAllowedAudioExt, sanitizeUploadName } from '../lib/upload.js'
 import { uploadSessionFile } from './uploads.js'
 
 const options = z.object({
@@ -29,8 +29,8 @@ export function jobsRoutes(ctx: AppContext): Hono {
       if (!isAllowedAudioExt(file.name)) {
         return c.json({ error: 'unsupported_type', detail: extname(file.name) || '(no extension)' }, 400)
       }
-      if (file.size > MAX_UPLOAD_BYTES) {
-        return c.json({ error: 'file_too_large', detail: `max ${MAX_UPLOAD_BYTES} bytes` }, 400)
+      if (file.size > MAX_MULTIPART_BYTES) {
+        return c.json({ error: 'file_too_large', detail: `max ${MAX_MULTIPART_BYTES} bytes — use chunked /api/uploads` }, 400)
       }
       const parsed = options.safeParse({
         title: typeof body.title === 'string' && body.title ? body.title : undefined,
