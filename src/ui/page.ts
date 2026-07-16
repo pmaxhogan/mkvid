@@ -39,7 +39,11 @@ export function PAGE_HTML(
   <h1>mkvid</h1><div id="conn">${conn}</div>
 </header>
 <form id="f">
-  <input id="url" type="url" placeholder="https://soundcloud.com/..." required style="width:100%"/>
+  <input id="url" type="url" placeholder="https://soundcloud.com/..." style="width:100%"/>
+  <div class="row" style="align-items:center">
+    <span style="color:#9aa">or upload audio:</span>
+    <input id="file" type="file" accept="audio/*,.mp3,.wav,.flac,.m4a,.m4b,.aac,.ogg,.oga,.opus,.wma,.aiff,.aif,.mka,.webm,.ac3,.amr,.ape,.wv"/>
+  </div>
   <div class="row">
     <select id="privacy"><option value="private" selected>Private</option>
       <option value="unlisted">Unlisted</option><option value="public">Public</option></select>
@@ -101,12 +105,49 @@ function subscribe(id){
     else if (m.type==='error'){ cur.textContent=''; const h=document.createElement('h3'); h.textContent='Failed ✗'; cur.appendChild(h); const p=document.createElement('p'); p.textContent=m.error; cur.appendChild(p); es.close(); refreshJobs(); }
   };
 }
+// Uploads use XHR (not fetch) so we can show real upload progress for big files.
+function uploadFile(file){
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('privacy', $('#privacy').value);
+    fd.append('style', $('#style').value);
+    const cur = $('#current'); cur.innerHTML = '<h3>Uploading…</h3><div id="p"></div>';
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/jobs');
+    xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable) { const pct = ev.loaded/ev.total*100; $('#p').innerHTML = 'upload '+Math.round(pct)+'%'+bar(pct); }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText));
+      else { let d=''; try{ d = JSON.parse(xhr.responseText).error; }catch(e){} reject(new Error(d || ('HTTP '+xhr.status))); }
+    };
+    xhr.onerror = () => reject(new Error('network error'));
+    xhr.send(fd);
+  });
+}
 $('#f').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const r = await fetch('/api/jobs', { method:'POST', headers:{'content-type':'application/json'},
-    body: JSON.stringify({ url:$('#url').value, privacy:$('#privacy').value, style:$('#style').value }) });
-  if(!r.ok){ alert('submit failed'); return; }
-  const {id} = await r.json(); subscribe(id); refreshJobs();
+  const file = $('#file').files[0];
+  const url = $('#url').value.trim();
+  if (!file && !url) { alert('Paste a URL or choose an audio file'); return; }
+  const btn = $('#f button[type=submit]'); btn.disabled = true;
+  try {
+    let id;
+    if (file) {
+      ({id} = await uploadFile(file));
+      $('#file').value = '';
+    } else {
+      const r = await fetch('/api/jobs', { method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ url, privacy:$('#privacy').value, style:$('#style').value }) });
+      if(!r.ok){ alert('submit failed'); return; }
+      ({id} = await r.json());
+    }
+    subscribe(id); refreshJobs();
+  } catch (err) {
+    $('#current').textContent = '';
+    alert('upload failed: ' + err.message);
+  } finally { btn.disabled = false; }
 });
 // Always render the YouTube connection header from a FRESH status fetch, never
 // from the (possibly bfcached/stale) server-rendered HTML shell or URL params.

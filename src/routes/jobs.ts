@@ -1,19 +1,55 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { randomUUID } from 'node:crypto'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join, extname, basename } from 'node:path'
 import { z } from 'zod'
 import type { AppContext } from '../context.js'
+import { UPLOAD_PREFIX, MAX_UPLOAD_BYTES, isAllowedAudioExt, sanitizeUploadName } from '../lib/upload.js'
 
-const submit = z.object({
-  url: z.url(),
+const options = z.object({
   title: z.string().trim().max(100).optional(),
   privacy: z.enum(['private', 'unlisted', 'public']).optional(),
   style: z.enum(['static', 'waves']).optional(),
 })
+// http(s) only: the upload:// marker is reserved for the multipart path, and a
+// JSON-submitted upload://../../x would traverse out of the work dir in the pipeline.
+const submit = options.extend({ url: z.url({ protocol: /^https?$/ }) })
 
 export function jobsRoutes(ctx: AppContext): Hono {
   const app = new Hono()
   app.post('/', async (c) => {
+    if ((c.req.header('content-type') || '').includes('multipart/form-data')) {
+      const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+      const file = body.file
+      if (!(file instanceof File)) return c.json({ error: 'missing_file' }, 400)
+      if (!isAllowedAudioExt(file.name)) {
+        return c.json({ error: 'unsupported_type', detail: extname(file.name) || '(no extension)' }, 400)
+      }
+      if (file.size > MAX_UPLOAD_BYTES) {
+        return c.json({ error: 'file_too_large', detail: `max ${MAX_UPLOAD_BYTES} bytes` }, 400)
+      }
+      const parsed = options.safeParse({
+        title: typeof body.title === 'string' && body.title ? body.title : undefined,
+        privacy: typeof body.privacy === 'string' && body.privacy ? body.privacy : undefined,
+        style: typeof body.style === 'string' && body.style ? body.style : undefined,
+      })
+      if (!parsed.success) return c.json({ error: 'invalid_input', detail: parsed.error.issues }, 400)
+      const b = parsed.data
+      const id = randomUUID()
+      // Write the audio straight into this job's work dir; the pipeline picks it
+      // up from there (and cleans the dir up) instead of running yt-dlp.
+      const name = sanitizeUploadName(file.name)
+      const workDir = join(ctx.config.dataDir, 'work', id)
+      mkdirSync(workDir, { recursive: true })
+      writeFileSync(join(workDir, name), Buffer.from(await file.arrayBuffer()))
+      ctx.jobs.create({
+        id, url: UPLOAD_PREFIX + name, title: b.title ?? basename(name, extname(name)),
+        privacy: b.privacy ?? ctx.config.defaultPrivacy, style: b.style ?? 'static',
+      })
+      ctx.queue.enqueue(id)
+      return c.json({ id })
+    }
     const parsed = submit.safeParse(await c.req.json().catch(() => ({})))
     if (!parsed.success) return c.json({ error: 'invalid_input', detail: parsed.error.issues }, 400)
     const b = parsed.data

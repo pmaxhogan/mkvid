@@ -1,5 +1,5 @@
-import { mkdirSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, rmSync, existsSync } from 'node:fs'
+import { join, basename, extname } from 'node:path'
 import type { AppContext } from '../context.js'
 import type { SseMessage } from '../types.js'
 import { downloadAudio } from './ytdlp.js'
@@ -8,6 +8,7 @@ import { chooseFps, chooseAudioArgs, renderVideo } from './ffmpeg.js'
 import { getValidAccessToken } from './google-oauth.js'
 import { uploadVideo, addToPlaylist } from './youtube.js'
 import { sendPush } from './push.js'
+import { UPLOAD_PREFIX, sanitizeUploadName } from './upload.js'
 import { log } from './log.js'
 
 export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
@@ -22,12 +23,25 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
   const setStatus = (status: SseMessage['status']) => { jobs.setStatus(jobId, status!); emit({ type: 'status', status }) }
 
   try {
-    // 1. download
+    // 1. download (or pick up a directly-uploaded file already in workDir)
     setStatus('downloading')
-    const { file, title } = await downloadAudio(
-      { ytdlpPath: config.ytdlpPath, url: job.url, workDir },
-      (p) => emit({ type: 'progress', phase: 'download', percent: p }), logLine,
-    )
+    let file: string, title: string
+    if (job.url.startsWith(UPLOAD_PREFIX)) {
+      const name = job.url.slice(UPLOAD_PREFIX.length)
+      // Defense in depth: the route sanitizes the name, but never let a stored
+      // marker resolve outside this job's work dir.
+      if (name !== sanitizeUploadName(name)) throw new Error('invalid uploaded file name')
+      file = join(workDir, name)
+      if (!existsSync(file)) throw new Error('uploaded file is missing (removed or lost on restart) — re-upload and retry')
+      title = basename(name, extname(name))
+      logLine(`using uploaded file ${name}`)
+      emit({ type: 'progress', phase: 'download', percent: 100 })
+    } else {
+      ({ file, title } = await downloadAudio(
+        { ytdlpPath: config.ytdlpPath, url: job.url, workDir },
+        (p) => emit({ type: 'progress', phase: 'download', percent: p }), logLine,
+      ))
+    }
     const finalTitle = job.title || title
     jobs.setTitle(jobId, finalTitle)
 
@@ -54,7 +68,10 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
     const { videoId, videoUrl } = await uploadVideo(
       {
         accessToken, filePath: outFile, title: finalTitle,
-        description: `Uploaded by mkvid from ${job.url}`, privacy: job.privacy, categoryId: config.youtubeCategoryId,
+        description: job.url.startsWith(UPLOAD_PREFIX)
+          ? 'Uploaded by mkvid'
+          : `Uploaded by mkvid from ${job.url}`,
+        privacy: job.privacy, categoryId: config.youtubeCategoryId,
       },
       (p) => emit({ type: 'progress', phase: 'upload', percent: p }),
     )
