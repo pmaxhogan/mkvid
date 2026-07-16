@@ -1,20 +1,23 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { join, extname, basename } from 'node:path'
+import { mkdirSync, writeFileSync, renameSync, rmSync, statSync } from 'node:fs'
+import { join, extname, basename, dirname } from 'node:path'
 import { z } from 'zod'
 import type { AppContext } from '../context.js'
 import { UPLOAD_PREFIX, MAX_UPLOAD_BYTES, isAllowedAudioExt, sanitizeUploadName } from '../lib/upload.js'
+import { uploadSessionFile } from './uploads.js'
 
 const options = z.object({
   title: z.string().trim().max(100).optional(),
   privacy: z.enum(['private', 'unlisted', 'public']).optional(),
   style: z.enum(['static', 'waves']).optional(),
 })
-// http(s) only: the upload:// marker is reserved for the multipart path, and a
+// http(s) only: the upload:// marker is reserved for the upload paths, and a
 // JSON-submitted upload://../../x would traverse out of the work dir in the pipeline.
 const submit = options.extend({ url: z.url({ protocol: /^https?$/ }) })
+// Chunked-upload finalize: reference a completed /api/uploads session instead of a URL.
+const submitUpload = options.extend({ uploadId: z.uuid() })
 
 export function jobsRoutes(ctx: AppContext): Hono {
   const app = new Hono()
@@ -50,7 +53,28 @@ export function jobsRoutes(ctx: AppContext): Hono {
       ctx.queue.enqueue(id)
       return c.json({ id })
     }
-    const parsed = submit.safeParse(await c.req.json().catch(() => ({})))
+    const body = await c.req.json().catch(() => ({}))
+    if (body && typeof body === 'object' && 'uploadId' in body) {
+      const parsed = submitUpload.safeParse(body)
+      if (!parsed.success) return c.json({ error: 'invalid_input', detail: parsed.error.issues }, 400)
+      const b = parsed.data
+      const src = uploadSessionFile(ctx.config.dataDir, b.uploadId)
+      if (!src) return c.json({ error: 'upload_not_found' }, 404)
+      if (statSync(src).size === 0) return c.json({ error: 'empty_upload' }, 400)
+      const id = randomUUID()
+      const name = basename(src)
+      const workDir = join(ctx.config.dataDir, 'work', id)
+      mkdirSync(workDir, { recursive: true })
+      renameSync(src, join(workDir, name))
+      rmSync(dirname(src), { recursive: true, force: true })
+      ctx.jobs.create({
+        id, url: UPLOAD_PREFIX + name, title: b.title ?? basename(name, extname(name)),
+        privacy: b.privacy ?? ctx.config.defaultPrivacy, style: b.style ?? 'static',
+      })
+      ctx.queue.enqueue(id)
+      return c.json({ id })
+    }
+    const parsed = submit.safeParse(body)
     if (!parsed.success) return c.json({ error: 'invalid_input', detail: parsed.error.issues }, 400)
     const b = parsed.data
     const id = randomUUID()
