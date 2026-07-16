@@ -105,26 +105,43 @@ function subscribe(id){
     else if (m.type==='error'){ cur.textContent=''; const h=document.createElement('h3'); h.textContent='Failed ✗'; cur.appendChild(h); const p=document.createElement('p'); p.textContent=m.error; cur.appendChild(p); es.close(); refreshJobs(); }
   };
 }
-// Uploads use XHR (not fetch) so we can show real upload progress for big files.
-function uploadFile(file){
+// Cloudflare caps a single request body at ~100MB, so files upload in ordered
+// chunks (XHR for per-chunk progress), then a JSON finalize creates the job.
+const CHUNK_BYTES = 24*1024*1024;
+function putChunk(id, blob, offset, total){
   return new Promise((resolve, reject) => {
-    const fd = new FormData();
-    fd.append('file', file);
-    fd.append('privacy', $('#privacy').value);
-    fd.append('style', $('#style').value);
-    const cur = $('#current'); cur.innerHTML = '<h3>Uploading…</h3><div id="p"></div>';
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/jobs');
+    xhr.open('PUT', '/api/uploads/'+id+'/chunk');
+    xhr.setRequestHeader('x-upload-offset', String(offset));
+    xhr.setRequestHeader('content-type', 'application/octet-stream');
     xhr.upload.onprogress = (ev) => {
-      if (ev.lengthComputable) { const pct = ev.loaded/ev.total*100; $('#p').innerHTML = 'upload '+Math.round(pct)+'%'+bar(pct); }
+      const pct = (offset+ev.loaded)/total*100;
+      $('#p').innerHTML = 'upload '+Math.round(pct)+'%'+bar(pct);
     };
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText));
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
       else { let d=''; try{ d = JSON.parse(xhr.responseText).error; }catch(e){} reject(new Error(d || ('HTTP '+xhr.status))); }
     };
     xhr.onerror = () => reject(new Error('network error'));
-    xhr.send(fd);
+    xhr.send(blob);
   });
+}
+async function uploadFile(file){
+  const initR = await fetch('/api/uploads', { method:'POST', headers:{'content-type':'application/json'},
+    body: JSON.stringify({ name:file.name, size:file.size }) });
+  if(!initR.ok){ let d=''; try{ d=(await initR.json()).error; }catch(e){} throw new Error(d || ('HTTP '+initR.status)); }
+  const {id} = await initR.json();
+  const cur = $('#current'); cur.innerHTML = '<h3>Uploading…</h3><div id="p"></div>';
+  let sent = 0;
+  while (sent < file.size) {
+    const chunk = file.slice(sent, sent + CHUNK_BYTES);
+    await putChunk(id, chunk, sent, file.size);
+    sent += chunk.size;
+  }
+  const r = await fetch('/api/jobs', { method:'POST', headers:{'content-type':'application/json'},
+    body: JSON.stringify({ uploadId:id, privacy:$('#privacy').value, style:$('#style').value }) });
+  if(!r.ok){ let d=''; try{ d=(await r.json()).error; }catch(e){} throw new Error(d || ('HTTP '+r.status)); }
+  return r.json();
 }
 $('#f').addEventListener('submit', async (e) => {
   e.preventDefault();
