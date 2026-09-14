@@ -49,7 +49,11 @@ GHCR auth from the mounted `/root/.docker/config.json` (from the one-time
    ```
    `.env` must set `OAUTH_REDIRECT_BASE=https://mkvid.maxhogan.dev`, real
    `CF_ACCESS_AUD`, `GOOGLE_OAUTH_*`, `VAPID_*`, and **not** set
-   `DEV_BYPASS_CF_ACCESS`.
+   `DEV_BYPASS_CF_ACCESS`. To render tracked's queue (README "tracked
+   integration") add `TRACKED_URL=https://tracked.pmaxhogan.workers.dev` and
+   `TRACKED_TOKEN=<the Worker's MKVID_TOKEN secret>`; the container logs
+   `tracked: connected` on start when both are right, or
+   `tracked: health check failed` when they are not.
 
 6. **GHCR auth (if not already):**
    `ssh mnmserver "docker login ghcr.io -u pmaxhogan"` (read:packages PAT).

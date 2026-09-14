@@ -88,7 +88,8 @@ async function refreshJobs(){
   for(const j of jobs){
     const div=document.createElement('div'); div.className='job';
     const b=document.createElement('b'); b.textContent=j.title||j.url; div.appendChild(b);
-    div.appendChild(document.createTextNode(' — '+j.status));
+    if(j.meta&&j.meta.origin==='tracked'){ div.appendChild(document.createTextNode(' ')); div.appendChild(httpsLink(j.meta.setUrl,'[tracked]')); }
+    div.appendChild(document.createTextNode(' — '+j.status+(j.privacyApplied&&j.privacyApplied!==j.privacy?' ('+j.privacyApplied+', requested '+j.privacy+')':'')));
     if(j.videoUrl){ div.appendChild(document.createTextNode(' — ')); div.appendChild(httpsLink(j.videoUrl,'watch')); }
     box.appendChild(div);
   }

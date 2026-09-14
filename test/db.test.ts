@@ -27,6 +27,23 @@ describe('db', () => {
     expect(got.videoUrl).toBe('https://youtu.be/vid')
     expect(j.list(10).length).toBe(1)
   })
+  it('jobs carry meta and the privacy YouTube applied', () => {
+    const j = makeJobsRepo(fresh())
+    const meta = { origin: 'tracked' as const, requestId: 'r1', setUrl: 'https://x/set', sourceUrl: 'https://api.soundcloud.com/tracks/1', lastCueSeconds: 10, artistName: null }
+    j.create({ id: 't', url: 'u', title: 'T', privacy: 'unlisted', style: 'static', meta })
+    j.create({ id: 'ui', url: 'u', title: null, privacy: 'private', style: 'static' })
+    expect(j.get('t')!.meta).toEqual(meta)
+    expect(j.get('ui')!.meta).toBeNull()
+    j.setResult('t', 'vid', 'https://youtu.be/vid', 'private')
+    j.setStatus('t', 'done')
+    expect(j.get('t')).toMatchObject({ privacy: 'unlisted', privacyApplied: 'private' })
+    expect(j.listUnreportedTracked().map((x) => x.id)).toEqual(['t'])
+    j.setMeta('t', { ...meta, reported: true })
+    expect(j.listUnreportedTracked()).toEqual([])
+    // Migration is idempotent on an already-migrated database.
+    expect(() => openDb(':memory:')).not.toThrow()
+  })
+
   it('appendLog + getLogs preserves order', () => {
     const j = makeJobsRepo(fresh())
     j.create({ id: 'x', url: 'u', title: null, privacy: 'private', style: 'static' })

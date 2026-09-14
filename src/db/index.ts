@@ -37,4 +37,12 @@ function migrate(db: Database.Database): void {
       key TEXT PRIMARY KEY, value TEXT NOT NULL, expires_at INTEGER
     );
   `)
+  // Additive column migrations for databases created before these existed.
+  addColumn(db, 'jobs', 'meta', 'TEXT')                // JSON JobMeta (origin: tracked …)
+  addColumn(db, 'jobs', 'privacy_applied', 'TEXT')     // privacyStatus YouTube actually set
+}
+
+function addColumn(db: Database.Database, table: string, column: string, type: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
 }

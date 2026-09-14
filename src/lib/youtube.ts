@@ -7,7 +7,7 @@ import type { Privacy } from '../types.js'
 export async function uploadVideo(
   opts: { accessToken: string; filePath: string; title: string; description: string; privacy: Privacy; categoryId: string },
   onProgress: (percent: number) => void,
-): Promise<{ videoId: string; videoUrl: string }> {
+): Promise<{ videoId: string; videoUrl: string; privacyApplied: Privacy | null }> {
   const auth = new OAuth2Client()
   auth.setCredentials({ access_token: opts.accessToken })
   // Cast: see note in google-oauth.ts's makeOAuthClient — googleapis-common
@@ -45,7 +45,11 @@ export async function uploadVideo(
   }
   const videoId = res.data.id
   if (!videoId) throw new Error('youtube: no video id returned')
-  return { videoId, videoUrl: `https://youtu.be/${videoId}` }
+  // What YouTube actually set: an OAuth app that hasn't passed Google's audit
+  // has its uploads forced to private no matter what was requested.
+  const applied = res.data.status?.privacyStatus
+  const privacyApplied: Privacy | null = applied === 'private' || applied === 'unlisted' || applied === 'public' ? applied : null
+  return { videoId, videoUrl: `https://youtu.be/${videoId}`, privacyApplied }
 }
 
 export async function addToPlaylist(accessToken: string, videoId: string, playlistId: string): Promise<void> {

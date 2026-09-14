@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, existsSync } from 'node:fs'
 import { join, basename, extname } from 'node:path'
 import type { AppContext } from '../context.js'
-import type { SseMessage } from '../types.js'
+import type { Job, SseMessage } from '../types.js'
 import { downloadAudio } from './ytdlp.js'
 import { probeAudio } from './probe.js'
 import { chooseFps, chooseAudioArgs, renderVideo } from './ffmpeg.js'
@@ -10,6 +10,19 @@ import { uploadVideo, addToPlaylist } from './youtube.js'
 import { sendPush } from './push.js'
 import { UPLOAD_PREFIX, sanitizeUploadName } from './upload.js'
 import { log } from './log.js'
+
+/** Video description: where the audio came from, and for tracked jobs the set page it belongs to. */
+export function describeJob(job: Pick<Job, 'url' | 'meta'>): string {
+  if (job.meta?.origin === 'tracked') {
+    return [
+      `Tracklist: ${job.meta.setUrl}`,
+      `Recording: ${job.meta.sourceUrl}`,
+      '',
+      'Rendered by mkvid for tracked — the set has no YouTube recording on 1001tracklists, so this is its SoundCloud / hearthis.at recording with a waveform.',
+    ].join('\n')
+  }
+  return job.url.startsWith(UPLOAD_PREFIX) ? 'Uploaded by mkvid' : `Uploaded by mkvid from ${job.url}`
+}
 
 export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
   const { jobs, config, hub } = ctx
@@ -65,17 +78,18 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
     // 4. upload
     setStatus('uploading')
     const accessToken = await getValidAccessToken(ctx.tokens, config.google)
-    const { videoId, videoUrl } = await uploadVideo(
+    const { videoId, videoUrl, privacyApplied } = await uploadVideo(
       {
         accessToken, filePath: outFile, title: finalTitle,
-        description: job.url.startsWith(UPLOAD_PREFIX)
-          ? 'Uploaded by mkvid'
-          : `Uploaded by mkvid from ${job.url}`,
+        description: describeJob(job),
         privacy: job.privacy, categoryId: config.youtubeCategoryId,
       },
       (p) => emit({ type: 'progress', phase: 'upload', percent: p }),
     )
-    jobs.setResult(jobId, videoId, videoUrl)
+    jobs.setResult(jobId, videoId, videoUrl, privacyApplied)
+    if (privacyApplied && privacyApplied !== job.privacy) {
+      logLine(`warning: requested ${job.privacy} but YouTube set ${privacyApplied} (unverified OAuth apps are forced to private)`)
+    }
     // Best-effort: add the upload to the configured playlist. A failure here (e.g.
     // token lacks the playlist scope) must not fail an already-successful upload.
     if (config.youtubePlaylistId) {

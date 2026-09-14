@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { parseDownloadPercent } from '../src/lib/ytdlp.js'
+import { parseDownloadPercent, parseDurationOutput } from '../src/lib/ytdlp.js'
+
+describe('parseDurationOutput', () => {
+  it('takes the last numeric line', () => {
+    expect(parseDurationOutput('WARNING: something\n4569.421\n')).toBeCloseTo(4569.421)
+    expect(parseDurationOutput('NA\n')).toBeNull()
+    expect(parseDurationOutput('')).toBeNull()
+  })
+})
 
 describe('parseDownloadPercent', () => {
   it('parses a percent line', () => {

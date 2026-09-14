@@ -14,6 +14,12 @@ export interface Config {
   ffprobePath: string
   ytdlpPath: string
   ffmpegAutoUpdate: boolean
+  /**
+   * The tracked Worker's mkvid queue (null = not configured, nothing is
+   * polled). `token` is tracked's MKVID_TOKEN; `privacy` is what queued sets
+   * are uploaded as (unlisted by default — tracked adds them to playlists).
+   */
+  tracked: { url: string; token: string; pollSeconds: number; privacy: Privacy } | null
 }
 
 function truthy(v: string | undefined): boolean {
@@ -51,5 +57,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ffprobePath: env.FFPROBE_PATH || 'ffprobe',
     ytdlpPath: env.YTDLP_PATH || 'yt-dlp',
     ffmpegAutoUpdate: env.FFMPEG_AUTOUPDATE ? truthy(env.FFMPEG_AUTOUPDATE) : false,
+    tracked: env.TRACKED_URL && env.TRACKED_TOKEN
+      ? {
+          url: env.TRACKED_URL.replace(/\/$/, ''),
+          token: env.TRACKED_TOKEN,
+          pollSeconds: Math.max(15, Number(env.TRACKED_POLL_SECONDS) || 60),
+          privacy: (env.TRACKED_PRIVACY as Privacy) || 'unlisted',
+        }
+      : null,
   }
 }

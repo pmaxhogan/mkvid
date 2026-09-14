@@ -7,6 +7,39 @@ export function parseDownloadPercent(line: string): number | null {
   return m ? Number(m[1]) : null
 }
 
+/** The last numeric line of `yt-dlp --print duration` output, in seconds; null when absent/NA. */
+export function parseDurationOutput(stdout: string): number | null {
+  const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean)
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const n = Number(lines[i])
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  return null
+}
+
+/**
+ * Ask yt-dlp for the source's duration without downloading anything. Null
+ * when the extractor doesn't know it (then the caller can't judge
+ * completeness and lets the download decide).
+ */
+export function probeDuration(opts: { ytdlpPath: string; url: string; timeoutMs?: number }): Promise<number | null> {
+  return new Promise((resolve, reject) => {
+    const args = ['--no-playlist', '--simulate', '--print', 'duration', '--', opts.url]
+    const p = spawn(opts.ytdlpPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    let err = ''
+    const timer = setTimeout(() => p.kill(), opts.timeoutMs ?? 60_000)
+    p.stdout.on('data', (c) => { out += c.toString() })
+    p.stderr.on('data', (c) => { err += c.toString() })
+    p.on('error', (e) => { clearTimeout(timer); reject(e) })
+    p.on('close', (code) => {
+      clearTimeout(timer)
+      if (code !== 0) return reject(new Error(`yt-dlp exit ${code}: ${err.slice(-1500)}`))
+      resolve(parseDurationOutput(out))
+    })
+  })
+}
+
 export function downloadAudio(
   opts: { ytdlpPath: string; url: string; workDir: string },
   onProgress: (p: number) => void, onLog: (l: string) => void,
