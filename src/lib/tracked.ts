@@ -91,6 +91,8 @@ export function makeTrackedClient(cfg: NonNullable<Config['tracked']>, fetcher: 
 const PERMANENT_RE = /incomplete_recording|unsupported url|not available|is private|private (?:track|video)|removed|does not exist|404|403|geo[- ]?restricted|no video formats|requested format is not available/i
 
 export function isPermanentFailure(error: string): boolean {
+  // Quota exhaustion is a 403 too, but tomorrow fixes it: never park for it.
+  if (/quota/i.test(error)) return false
   return PERMANENT_RE.test(error)
 }
 
@@ -111,7 +113,10 @@ export async function reportJobToTracked(ctx: AppContext, job: Job, client: Trac
   const meta = job.meta
   if (!client || !meta || meta.origin !== 'tracked' || meta.reported) return false
   try {
-    if (job.status === 'done' && job.videoId && job.videoUrl) {
+    // A job interrupted between the upload and its final status still has
+    // the video: deliver it, or tracked would requeue and the set would be
+    // uploaded twice.
+    if ((job.status === 'done' || job.status === 'interrupted') && job.videoId && job.videoUrl) {
       const r = await client.complete({
         id: meta.requestId, videoId: job.videoId, videoUrl: job.videoUrl,
         privacy: job.privacyApplied ?? job.privacy, jobId: job.id,

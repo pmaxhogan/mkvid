@@ -80,6 +80,8 @@ describe('helpers', () => {
     expect(isPermanentFailure('HTTP Error 404: Not Found')).toBe(true)
     expect(isPermanentFailure('yt-dlp exit 1: ERROR: Unable to download webpage: timed out')).toBe(false)
     expect(isPermanentFailure('ffmpeg exit 1')).toBe(false)
+    // A 403 for quota is not permanent — tomorrow's quota fixes it.
+    expect(isPermanentFailure('403 The request cannot be completed because you have exceeded your quota. (quotaExceeded)')).toBe(false)
   })
 })
 
@@ -173,6 +175,15 @@ describe('reportJobToTracked', () => {
     expect(await reportJobToTracked(ctx, jobWith(ctx, 'done'), client)).toBe(true)
     expect(client.calls).toEqual([['complete', { id: request.id, videoId: 'vid12345678', videoUrl: 'https://youtu.be/vid12345678', privacy: 'private', jobId: 'job-done' }]])
     expect(ctx.jobs.get('job-done')!.meta!.reported).toBe(true)
+  })
+
+  it('an interrupted job that had already uploaded is delivered as a completion, not requeued', async () => {
+    const client = fakeClient()
+    const ctx = buildContext(cfg, { tracked: client })
+    const job = jobWith(ctx, 'done')
+    ctx.jobs.setStatus(job.id, 'interrupted')
+    expect(await reportJobToTracked(ctx, ctx.jobs.get(job.id)!, client)).toBe(true)
+    expect(client.calls[0]![0]).toBe('complete')
   })
 
   it('reports failures (retryable) and interruptions, and skips UI jobs / already-reported ones', async () => {

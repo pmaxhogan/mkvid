@@ -92,7 +92,9 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
     }
     // Best-effort: add the upload to the configured playlist. A failure here (e.g.
     // token lacks the playlist scope) must not fail an already-successful upload.
-    if (config.youtubePlaylistId) {
+    // Sets from tracked go into tracked's own playlists instead (and every
+    // playlistItems.insert costs quota the two services share).
+    if (config.youtubePlaylistId && job.meta?.origin !== 'tracked') {
       try {
         await addToPlaylist(accessToken, videoId, config.youtubePlaylistId)
         logLine(`added to playlist ${config.youtubePlaylistId}`)
