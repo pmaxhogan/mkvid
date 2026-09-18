@@ -32,7 +32,7 @@ function fakeClient(requests: TrackedRequest[] = []): TrackedClient & { calls: A
   const calls: Array<[string, unknown]> = []
   return {
     calls,
-    async claim() { calls.push(['claim', null]); return requests.shift() ?? null },
+    async claim(accounts) { calls.push(['claim', [...accounts]]); return requests.shift() ?? null },
     async job(id, jobId) { calls.push(['job', { id, jobId }]) },
     async complete(input) { calls.push(['complete', input]); return { status: 'done' } },
     async fail(input) { calls.push(['fail', input]) },
@@ -94,19 +94,56 @@ describe('makeTrackedClient', () => {
       return new Response(JSON.stringify({ request: request }), { status: 200 })
     }) as unknown as typeof fetch
     const client = makeTrackedClient(cfg.tracked!, fetcher)
-    expect((await client.claim())!.id).toBe(request.id)
-    expect(seen[0]).toMatchObject({ url: 'https://tracked.example/mkvid/claim' })
+    expect((await client.claim(['primary', 'shared']))!.id).toBe(request.id)
+    expect(seen[0]).toMatchObject({ url: 'https://tracked.example/mkvid/claim', init: { body: JSON.stringify({ accounts: ['primary', 'shared'] }) } })
     expect((seen[0]!.init.headers as Record<string, string>).authorization).toBe('Bearer mk')
     await expect(client.complete({ id: request.id, videoId: 'v', videoUrl: 'u', privacy: 'unlisted', jobId: 'j' })).rejects.toBeInstanceOf(TrackedHttpError)
   })
 })
 
 describe('pollTracked', () => {
-  it('reports not_connected without YouTube tokens and never claims', async () => {
+  it('reports not_connected without YouTube tokens — still polling, with no accounts, so tracked can show why', async () => {
     const client = fakeClient([request])
     const ctx = buildContext(cfg, { tracked: client })
+    expect(ctx.connectedAccounts()).toEqual([])
     expect(await pollTracked(ctx, client)).toEqual({ action: 'not_connected' })
-    expect(client.calls).toEqual([])
+    expect(client.calls).toEqual([['claim', []]])
+    expect(ctx.jobs.list(10)).toEqual([])
+  })
+
+  it('offers only the accounts that are configured and connected, primary first', async () => {
+    const client = fakeClient([])
+    const one = buildContext(cfg, { tracked: client })
+    expect(one.tokensShared).toBeNull()
+    connected(one)
+    expect(one.connectedAccounts()).toEqual(['primary'])
+    await pollTracked(one, client)
+    expect(client.calls.at(-1)).toEqual(['claim', ['primary']])
+
+    const twoCfg = loadConfig({ DATA_DIR: ':memory:', TRACKED_URL: 'https://tracked.example', TRACKED_TOKEN: 'mk', SHARED_GOOGLE_OAUTH_CLIENT_ID: 'shared-id', SHARED_GOOGLE_OAUTH_CLIENT_SECRET: 'shared-secret' } as any)
+    const two = buildContext(twoCfg, { tracked: client })
+    two.tokensShared!.save({ accessToken: 'a2', refreshToken: 'r2', expiresAt: Date.now() + 3600_000, scope: 's', connectedAt: 1 })
+    expect(two.connectedAccounts()).toEqual(['shared'])
+    connected(two)
+    expect(two.connectedAccounts()).toEqual(['primary', 'shared'])
+    expect(two.accountFor('shared').google).toMatchObject({ clientId: 'shared-id', clientSecret: 'shared-secret', redirectBase: 'http://localhost:8080' })
+    expect(two.accountFor('primary').store).toBe(two.tokens)
+    expect(two.accountFor(undefined).store).toBe(two.tokens)
+    // Never configured: a 'shared' request falls back to the primary rather than failing.
+    expect(one.accountFor('shared').store).toBe(one.tokens)
+  })
+
+  it('stamps the job with the account tracked handed the request out for', async () => {
+    const client = fakeClient([{ ...request, account: 'shared' }, { ...request, id: '22222222-2222-4222-8222-222222222222' }])
+    const ctx = buildContext(diskCfg, { tracked: client })
+    openContexts.push(ctx)
+    connected(ctx)
+    const r = await pollTracked(ctx, client, { probe: async () => 3700, resolve: async (u) => u })
+    expect(r).toMatchObject({ action: 'started' })
+    expect(ctx.jobs.get((r as { jobId: string }).jobId)!.meta).toMatchObject({ account: 'shared' })
+    await vi.waitFor(() => expect(ctx.queue.size).toBe(0), { timeout: 5000 })
+    const r2 = await pollTracked(ctx, client, { probe: async () => 3700, resolve: async (u) => u })
+    expect(ctx.jobs.get((r2 as { jobId: string }).jobId)!.meta).toMatchObject({ account: 'primary' })
   })
 
   it('idles when tracked has nothing queued', async () => {
@@ -145,7 +182,7 @@ describe('pollTracked', () => {
     const jobId = (r as { jobId: string }).jobId
     const job = ctx.jobs.get(jobId)!
     expect(job).toMatchObject({ url: request.sourceUrl, title: request.setTitle, privacy: 'unlisted', style: 'static' })
-    expect(job.meta).toEqual({ origin: 'tracked', requestId: request.id, setUrl: request.setUrl, sourceUrl: request.sourceUrl, lastCueSeconds: 3600, artistName: 'DJ' })
+    expect(job.meta).toEqual({ origin: 'tracked', account: 'primary', requestId: request.id, setUrl: request.setUrl, sourceUrl: request.sourceUrl, lastCueSeconds: 3600, artistName: 'DJ' })
     expect(client.calls.find((c) => c[0] === 'job')).toEqual(['job', { id: request.id, jobId }])
     // While the job is running the slot is busy.
     expect(await pollTracked(ctx, client)).toEqual({ action: 'busy' })

@@ -17,6 +17,12 @@ describe('loadConfig', () => {
   it('vapid null when keys absent', () => {
     expect(loadConfig({} as any).vapid).toBeNull()
   })
+  it('has a shared OAuth client only when both SHARED_GOOGLE_OAUTH_* are set', () => {
+    expect(loadConfig({} as any).googleShared).toBeNull()
+    expect(loadConfig({ SHARED_GOOGLE_OAUTH_CLIENT_ID: 'x' } as any).googleShared).toBeNull()
+    expect(loadConfig({ SHARED_GOOGLE_OAUTH_CLIENT_ID: 'x', SHARED_GOOGLE_OAUTH_CLIENT_SECRET: 'y', OAUTH_REDIRECT_BASE: 'https://mkvid.maxhogan.dev/' } as any).googleShared)
+      .toEqual({ clientId: 'x', clientSecret: 'y', redirectBase: 'https://mkvid.maxhogan.dev' })
+  })
   it('strips trailing slash from redirectBase', () => {
     const c = loadConfig({ OAUTH_REDIRECT_BASE: 'https://mkvid.maxhogan.dev/' } as any)
     expect(c.google.redirectBase).toBe('https://mkvid.maxhogan.dev')

@@ -1,13 +1,16 @@
 export function PAGE_HTML(
-  status: { connected: boolean; channelTitle?: string | null },
+  status: { connected: boolean; channelTitle?: string | null; shared?: { connected: boolean; channelTitle?: string | null } | null },
   vapidPublicKey: string | null,
 ): string {
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-  const conn = status.connected
-    ? `<span>YouTube: <b>${esc(status.channelTitle ?? 'connected')}</b></span>
-       <button id="disconnect">Disconnect</button>`
-    : `<a href="/oauth/start"><button>Connect YouTube</button></a>`
+  const row = (label: string, account: string, s: { connected: boolean; channelTitle?: string | null }) => s.connected
+    ? `<span>${label}: <b>${esc(s.channelTitle ?? 'connected')}</b></span>
+       <button class="disconnect" data-account="${account}">Disconnect</button>`
+    : `<a href="/oauth/start?account=${account}"><button>Connect ${label}</button></a>`
+  // The shared row (the tracked sync's Google project, used once mkvid's own
+  // quota day is spent) only exists when a second OAuth client is configured.
+  const conn = row('YouTube', 'primary', status) + (status.shared ? '<br/>' + row('YouTube (shared quota)', 'shared', status.shared) : '')
   const vapid = JSON.stringify(vapidPublicKey)
   return `<!doctype html><html><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -22,8 +25,9 @@ export function PAGE_HTML(
   input:focus,select:focus,button:focus{outline:2px solid #2b6cff;outline-offset:1px}
   button{cursor:pointer;background:#2b6cff;border:none;color:#fff}
   button:hover{background:#3d7bff}
-  #disconnect{background:#3a1f1f;color:#f2b8b8}
-  #disconnect:hover{background:#4a2626}
+  .disconnect{background:#3a1f1f;color:#f2b8b8}
+  .disconnect:hover{background:#4a2626}
+  #conn{text-align:right;line-height:2}
   a{color:#7aa2ff}
   header{display:flex;gap:1rem;align-items:center;justify-content:space-between;margin-bottom:1rem}
   form{background:#111116;border:1px solid #222;border-radius:.6rem;padding:.8rem}
@@ -68,7 +72,7 @@ const $ = (s) => document.querySelector(s);
   if (p.has('yt') || p.has('yt_error')) {
     const err = p.get('yt_error');
     const note = document.createElement('div');
-    note.textContent = err ? ('YouTube connect failed: ' + err) : 'YouTube connected ✓';
+    note.textContent = err ? ('YouTube connect failed: ' + err) : ('YouTube connected ✓' + (p.get('account') === 'shared' ? ' (shared quota account)' : ''));
     note.style.cssText = 'margin:.5rem 0;padding:.4rem .6rem;border-radius:.4rem;background:'
       + (err ? '#3a1f1f;color:#f2b8b8' : '#16311f;color:#8fe0a0');
     $('header').after(note);
@@ -169,20 +173,24 @@ $('#f').addEventListener('submit', async (e) => {
 });
 // Always render the YouTube connection header from a FRESH status fetch, never
 // from the (possibly bfcached/stale) server-rendered HTML shell or URL params.
-function renderConn(s){
-  const el=$('#conn'); el.textContent='';
+function connRow(el, label, account, s){
   if(s && s.connected){
-    const span=document.createElement('span'); span.textContent='YouTube: ';
+    const span=document.createElement('span'); span.textContent=label+': ';
     const b=document.createElement('b'); b.textContent=s.channelTitle||'connected'; span.appendChild(b);
     el.appendChild(span); el.appendChild(document.createTextNode(' '));
-    const btn=document.createElement('button'); btn.id='disconnect'; btn.textContent='Disconnect';
-    btn.addEventListener('click', async ()=>{ btn.disabled=true; await fetch('/oauth/disconnect',{method:'POST'}); refreshConn(); });
+    const btn=document.createElement('button'); btn.className='disconnect'; btn.textContent='Disconnect';
+    btn.addEventListener('click', async ()=>{ btn.disabled=true; await fetch('/oauth/disconnect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({account})}); refreshConn(); });
     el.appendChild(btn);
   } else {
-    const a=document.createElement('a'); a.href='/oauth/start';
-    const btn=document.createElement('button'); btn.textContent='Connect YouTube';
+    const a=document.createElement('a'); a.href='/oauth/start?account='+account;
+    const btn=document.createElement('button'); btn.textContent='Connect '+label;
     a.appendChild(btn); el.appendChild(a);
   }
+}
+function renderConn(s){
+  const el=$('#conn'); el.textContent='';
+  connRow(el, 'YouTube', 'primary', s);
+  if(s && s.shared){ el.appendChild(document.createElement('br')); connRow(el, 'YouTube (shared quota)', 'shared', s.shared); }
 }
 async function refreshConn(){ try{ const r=await fetch('/api/youtube/status',{cache:'no-store'}); if(r.ok) renderConn(await r.json()); }catch(e){} }
 refreshConn();
