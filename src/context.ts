@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { rmSync } from 'node:fs'
 import type { Config } from './config.js'
-import type { TokenStore, KVCache } from './types.js'
+import type { TokenStore, KVCache, UploadAccount } from './types.js'
 import { openDb } from './db/index.js'
 import { makeTokenStore } from './db/tokens.js'
 import { makeJobsRepo } from './db/jobs.js'
@@ -17,7 +17,14 @@ export interface AppContext {
   config: Config
   db: Database.Database
   jobs: ReturnType<typeof makeJobsRepo>
+  /** The primary account's YouTube tokens (mkvid's own Google project). */
   tokens: TokenStore
+  /** Tokens for the shared account (the tracked sync's project); null unless SHARED_GOOGLE_OAUTH_CLIENT_* is set. */
+  tokensShared: TokenStore | null
+  /** The token store + OAuth client for an account; the shared one only when configured. */
+  accountFor(account: UploadAccount | undefined): { store: TokenStore; google: Config['google'] }
+  /** Accounts that can upload right now: configured and with a connected YouTube token. Fill order. */
+  connectedAccounts(): UploadAccount[]
   kv: KVCache
   push: ReturnType<typeof makePushRepo>
   hub: SseHub
@@ -30,10 +37,21 @@ export function buildContext(config: Config, opts: { tracked?: TrackedClient | n
   const db = openDb(config.dataDir === ':memory:' ? ':memory:' : join(config.dataDir, 'db', 'mkvid.sqlite'))
   const ctx = {
     config, db,
-    jobs: makeJobsRepo(db), tokens: makeTokenStore(db), kv: makeKvCache(db), push: makePushRepo(db),
+    jobs: makeJobsRepo(db), tokens: makeTokenStore(db, 'primary'), tokensShared: config.googleShared ? makeTokenStore(db, 'shared') : null,
+    kv: makeKvCache(db), push: makePushRepo(db),
     hub: new SseHub(),
     tracked: opts.tracked !== undefined ? opts.tracked : config.tracked ? makeTrackedClient(config.tracked) : null,
   } as AppContext
+  ctx.accountFor = (account) =>
+    account === 'shared' && ctx.tokensShared && config.googleShared
+      ? { store: ctx.tokensShared, google: config.googleShared }
+      : { store: ctx.tokens, google: config.google }
+  ctx.connectedAccounts = () => {
+    const out: UploadAccount[] = []
+    if (ctx.tokens.load()) out.push('primary')
+    if (ctx.tokensShared?.load()) out.push('shared')
+    return out
+  }
   // After every job, hand its outcome to tracked if it came from there (a
   // no-op for UI jobs). Reads the job row, so it is the durable status that
   // gets reported, not an in-memory event.

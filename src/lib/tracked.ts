@@ -13,7 +13,10 @@
  *      row as `meta.reported`, so a report that failed — or a restart between
  *      upload and report — is retried instead of the set being rendered twice
  *      once tracked's claim expires);
- *   2. if the render slot is free and YouTube is connected, claim one request;
+ *   2. if the render slot is free, claim one request, telling tracked which
+ *      upload accounts (Google projects) currently have a connected YouTube
+ *      token — it fills its own project's quota day first, then the sync's —
+ *      and gets back the request stamped with the account to upload through;
  *   3. resolve the source (hearthis embed → track page), probe its duration
  *      and refuse a recording shorter than the tracklist's last cue
  *      (`incomplete_recording`, permanent — a clip is not the set);
@@ -23,7 +26,7 @@
 import { randomUUID } from 'node:crypto'
 import type { AppContext } from '../context.js'
 import type { Config } from '../config.js'
-import type { Job, JobMeta } from '../types.js'
+import type { Job, JobMeta, UploadAccount } from '../types.js'
 import { probeDuration } from './ytdlp.js'
 import { resolveSourceUrl } from './sources.js'
 import { log } from './log.js'
@@ -40,10 +43,12 @@ export interface TrackedRequest {
   trackCount: number | null
   idedCount: number | null
   attempts: number
+  /** Which account (Google project) to upload through; a Worker from before accounts existed sends none = primary. */
+  account?: UploadAccount
 }
 
 export interface TrackedClient {
-  claim(): Promise<TrackedRequest | null>
+  claim(accounts: readonly UploadAccount[]): Promise<TrackedRequest | null>
   job(id: string, jobId: string): Promise<void>
   complete(input: { id: string; videoId: string; videoUrl: string; privacy: string | null; jobId: string }): Promise<{ status: string }>
   fail(input: { id: string; error: string; permanent: boolean; jobId: string | null }): Promise<void>
@@ -69,8 +74,8 @@ export function makeTrackedClient(cfg: NonNullable<Config['tracked']>, fetcher: 
     return (text ? JSON.parse(text) : {}) as T
   }
   return {
-    async claim() {
-      return (await call<{ request: TrackedRequest | null }>('POST', '/mkvid/claim', {})).request
+    async claim(accounts) {
+      return (await call<{ request: TrackedRequest | null }>('POST', '/mkvid/claim', { accounts })).request
     },
     async job(id, jobId) {
       await call('POST', '/mkvid/job', { id, jobId })
@@ -152,11 +157,14 @@ export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: 
   for (const job of ctx.jobs.listUnreportedTracked()) await reportJobToTracked(ctx, job, client)
 
   if (ctx.queue.size > 0) return { action: 'busy' }
-  if (!ctx.tokens.load()) return { action: 'not_connected' }
-
-  const req = await client.claim()
+  const accounts = ctx.connectedAccounts()
+  // Still poll with no accounts: tracked records the outcome so its panel can
+  // say "reconnect YouTube on mkvid" instead of "mkvid is not polling".
+  const req = await client.claim(accounts)
+  if (accounts.length === 0) return { action: 'not_connected' }
   if (!req) return { action: 'idle' }
-  log('info', 'tracked: claimed', { requestId: req.id, slug: req.slug, setUrl: req.setUrl, source: req.source, attempt: req.attempts })
+  const account: UploadAccount = req.account === 'shared' ? 'shared' : 'primary'
+  log('info', 'tracked: claimed', { requestId: req.id, slug: req.slug, setUrl: req.setUrl, source: req.source, attempt: req.attempts, account })
 
   let url: string
   try {
@@ -183,7 +191,7 @@ export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: 
   }
 
   const meta: JobMeta = {
-    origin: 'tracked', requestId: req.id, setUrl: req.setUrl, sourceUrl: req.sourceUrl,
+    origin: 'tracked', account, requestId: req.id, setUrl: req.setUrl, sourceUrl: req.sourceUrl,
     lastCueSeconds: req.lastCueSeconds, artistName: req.artistName,
   }
   const id = randomUUID()

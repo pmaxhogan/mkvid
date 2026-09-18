@@ -77,7 +77,9 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
 
     // 4. upload
     setStatus('uploading')
-    const accessToken = await getValidAccessToken(ctx.tokens, config.google)
+    // A tracked job names the Google project (account) it was handed out for; UI jobs use the primary.
+    const acct = ctx.accountFor(job.meta?.account)
+    const accessToken = await getValidAccessToken(acct.store, acct.google)
     const { videoId, videoUrl, privacyApplied } = await uploadVideo(
       {
         accessToken, filePath: outFile, title: finalTitle,
@@ -92,8 +94,8 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
     }
     // Best-effort: add the upload to the configured playlist. A failure here (e.g.
     // token lacks the playlist scope) must not fail an already-successful upload.
-    // Sets from tracked go into tracked's own playlists instead (and every
-    // playlistItems.insert costs quota the two services share).
+    // Sets from tracked go into tracked's own playlists instead — tracked adds
+    // them, and paying 50 units here as well would be a waste.
     if (config.youtubePlaylistId && job.meta?.origin !== 'tracked') {
       try {
         await addToPlaylist(accessToken, videoId, config.youtubePlaylistId)
@@ -107,7 +109,9 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
     void sendPush(config.vapid, ctx.push.list(), { title: 'Upload complete', body: finalTitle, url: videoUrl },
       (endpoint) => ctx.push.removeByEndpoint(endpoint))
   } catch (e: any) {
-    const msg = e?.message === 'reconnect_youtube' ? 'YouTube not connected — reconnect and retry.' : String(e?.message || e)
+    const msg = e?.message === 'reconnect_youtube'
+      ? `YouTube not connected (${job.meta?.account === 'shared' ? 'shared' : 'primary'} account) — reconnect and retry.`
+      : String(e?.message || e)
     jobs.setError(jobId, msg)
     emit({ type: 'error', error: msg })
     void sendPush(config.vapid, ctx.push.list(), { title: 'Upload failed', body: msg.slice(0, 120), url: '/' },

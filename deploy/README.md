@@ -19,12 +19,18 @@ GHCR auth from the mounted `/root/.docker/config.json` (from the one-time
 
 ## One-time setup
 
-1. **Google Cloud (one-time):** reuse `tracked`'s OAuth client or create a new
-   "Web application" client; add authorized redirect URIs
-   `https://mkvid.maxhogan.dev/oauth/callback` and
-   `http://localhost:8080/oauth/callback`; enable **YouTube Data API v3**; on
-   the OAuth consent screen add `pmaxhogan@gmail.com` as a test user. Note:
-   un-audited apps force uploads to Private.
+1. **Google Cloud (one-time):** mkvid has its own project, **mkvid-uploads**
+   (created 2026-09-14 with `gcloud projects create mkvid-uploads`; YouTube
+   Data API v3 enabled), with a "Web application" OAuth client whose
+   authorized redirect URIs are `https://mkvid.maxhogan.dev/oauth/callback`
+   and `http://localhost:8080/oauth/callback` → `GOOGLE_OAUTH_CLIENT_*`.
+   The **tracked** sync's project, **tracked-youtube**, holds a second client
+   with the same redirect URIs → `SHARED_GOOGLE_OAUTH_CLIENT_*`: tracked
+   hands mkvid up to `MKVID_SHARED_DAILY_CLAIM_CAP` uploads a day on it once
+   mkvid-uploads has spent its own quota day (README "tracked integration").
+   Both consent screens: `pmaxhogan@gmail.com` as a test user, or publish the
+   app ("In production", unverified is fine) so refresh tokens stop expiring
+   after 7 days. OAuth clients cannot be created with gcloud — console only.
 
 2. **Cloudflare Access (one-time):** Zero Trust → Access → Applications → Add
    → Self-hosted; app domain `mkvid.maxhogan.dev`; policy Allow, Emails
@@ -53,7 +59,9 @@ GHCR auth from the mounted `/root/.docker/config.json` (from the one-time
    integration") add `TRACKED_URL=https://tracked.pmaxhogan.workers.dev` and
    `TRACKED_TOKEN=<the Worker's MKVID_TOKEN secret>`; the container logs
    `tracked: connected` on start when both are right, or
-   `tracked: health check failed` when they are not.
+   `tracked: health check failed` when they are not. Add
+   `SHARED_GOOGLE_OAUTH_CLIENT_ID/SECRET` (the tracked-youtube client) for the
+   second upload account, then connect it from the UI's second button.
 
 6. **GHCR auth (if not already):**
    `ssh mnmserver "docker login ghcr.io -u pmaxhogan"` (read:packages PAT).

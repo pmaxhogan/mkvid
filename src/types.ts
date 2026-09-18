@@ -21,8 +21,18 @@ export interface JobInput {
  * tracked Worker queued (no YouTube recording on 1001tracklists, but a
  * SoundCloud / hearthis.at one); their outcome is reported back to it.
  */
+/**
+ * Which Google Cloud project's OAuth client an upload goes through. `primary`
+ * is mkvid's own (GOOGLE_OAUTH_CLIENT_*), `shared` the tracked sync's
+ * (SHARED_GOOGLE_OAUTH_CLIENT_*) — same YouTube channel, separate API quota.
+ */
+export type UploadAccount = 'primary' | 'shared'
+export const UPLOAD_ACCOUNTS: readonly UploadAccount[] = ['primary', 'shared']
+
 export interface JobMeta {
   origin: 'tracked'
+  /** The account tracked handed this request out for (absent on jobs from before accounts existed = primary). */
+  account?: UploadAccount
   /** tracked's mkvid_requests.id */
   requestId: string
   /** The 1001tracklists set page — goes in the video description. */

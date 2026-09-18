@@ -9,6 +9,13 @@ export interface Config {
   youtubePlaylistId: string
   cfAccess: { teamDomain: string; aud: string; allowedEmails: string[]; devBypass: boolean }
   google: { clientId: string; clientSecret: string; redirectBase: string }
+  /**
+   * A second OAuth client, in the tracked sync's Google project, for uploads
+   * tracked hands out on the `shared` account once mkvid's own project has
+   * used its YouTube quota day. Null (SHARED_GOOGLE_OAUTH_CLIENT_* unset) =
+   * mkvid only ever offers the primary.
+   */
+  googleShared: { clientId: string; clientSecret: string; redirectBase: string } | null
   vapid: { publicKey: string; privateKey: string; subject: string } | null
   ffmpegPath: string
   ffprobePath: string
@@ -29,6 +36,7 @@ function truthy(v: string | undefined): boolean {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const devBypass = truthy(env.DEV_BYPASS_CF_ACCESS)
   const dataDir = env.DATA_DIR || './data'
+  const redirectBase = (env.OAUTH_REDIRECT_BASE || `http://localhost:${env.PORT || 8080}`).replace(/\/$/, '')
   const vapidPub = env.VAPID_PUBLIC_KEY
   const vapidPriv = env.VAPID_PRIVATE_KEY
   return {
@@ -48,8 +56,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     google: {
       clientId: env.GOOGLE_OAUTH_CLIENT_ID || '',
       clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET || '',
-      redirectBase: (env.OAUTH_REDIRECT_BASE || `http://localhost:${env.PORT || 8080}`).replace(/\/$/, ''),
+      redirectBase,
     },
+    googleShared: env.SHARED_GOOGLE_OAUTH_CLIENT_ID && env.SHARED_GOOGLE_OAUTH_CLIENT_SECRET
+      ? { clientId: env.SHARED_GOOGLE_OAUTH_CLIENT_ID, clientSecret: env.SHARED_GOOGLE_OAUTH_CLIENT_SECRET, redirectBase }
+      : null,
     vapid: vapidPub && vapidPriv
       ? { publicKey: vapidPub, privateKey: vapidPriv, subject: env.VAPID_SUBJECT || 'mailto:pmaxhogan@gmail.com' }
       : null,

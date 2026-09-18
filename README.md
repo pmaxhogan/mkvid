@@ -12,7 +12,8 @@ Cloudflare Access.
    (`static` style, the ps1 default) or an oscilloscope (`waves`), always
    `yuv420p`, encoded with `h264_nvenc` on the GPU (falls back to `libx264`).
 3. **Upload** — resumable upload to YouTube via the Data API (Private by default),
-   authorized once via Google OAuth.
+   authorized once via Google OAuth (twice, if a second OAuth client is set —
+   see "tracked integration").
 4. **Notify** — a Web Push notification fires when the upload finishes, even with
    the site closed (works on Android Chrome via FCM).
 
@@ -26,7 +27,15 @@ whenever its render slot is free and:
 
 1. **claims** one request (`POST /mkvid/claim`, bearer `TRACKED_TOKEN` = the
    Worker's `MKVID_TOKEN`) — the set page title, the recording URL and the
-   tracklist's last cue;
+   tracklist's last cue. The body lists the **upload accounts** mkvid can use
+   right now (`{ "accounts": ["primary", "shared"] }`: the Google Cloud
+   projects it has a connected YouTube token for), and the request comes back
+   stamped with the one to upload through — tracked fills mkvid's own project
+   (`GOOGLE_OAUTH_CLIENT_*`, project mkvid-uploads) first and spills to the
+   sync's (`SHARED_GOOGLE_OAUTH_CLIENT_*`, project tracked-youtube) once that
+   quota day is spent. Same channel, separate 10 000-unit quotas (an upload
+   costs 1 600). Polling continues with no account connected, so tracked's
+   panel can say "reconnect YouTube on mkvid" rather than "mkvid is down";
 2. **resolves the source**: SoundCloud API track URLs go to yt-dlp as-is; a
    hearthis.at *embed* is resolved to the track page yt-dlp's extractor accepts
    (one fetch of the embed HTML);
