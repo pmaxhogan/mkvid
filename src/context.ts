@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import { join } from 'node:path'
-import { rmSync } from 'node:fs'
+import { readdirSync, rmSync } from 'node:fs'
 import type { Config } from './config.js'
 import type { TokenStore, KVCache, UploadAccount } from './types.js'
 import { openDb } from './db/index.js'
@@ -10,7 +10,8 @@ import { makeKvCache } from './db/kv.js'
 import { makePushRepo } from './db/push.js'
 import { SseHub } from './lib/sse.js'
 import { JobQueue } from './lib/queue.js'
-import { runJob } from './lib/pipeline.js'
+import { runJob, claimSceneResume, isKeptWork, pruneKeptWork } from './lib/pipeline.js'
+import { log } from './lib/log.js'
 import { makeTrackedClient, reportJobToTracked, type TrackedClient } from './lib/tracked.js'
 
 export interface AppContext {
@@ -66,10 +67,28 @@ export function buildContext(config: Config, opts: { tracked?: TrackedClient | n
     const job = ctx.jobs.get(jobId)
     if (job) await reportJobToTracked(ctx, job, ctx.tracked)
   })
-  ctx.jobs.markRunningInterrupted() // recover from a crash mid-job
-  // Reclaim disk from work dirs orphaned by a crash/kill (each can hold a ~0.3 GB mp4).
+  // Recover from a crash/restart mid-job. Jobs of the old styles become
+  // `interrupted`; a scene job whose audio was downloaded goes back on the
+  // queue and resumes from its finished segments (hours of rendering that a
+  // Watchtower restart must not throw away).
+  const workRoot = join(config.dataDir, 'work')
+  const resumed = config.dataDir === ':memory:'
+    ? (ctx.jobs.markRunningInterrupted(), [])
+    : ctx.jobs.recoverAfterRestart((job) => claimSceneResume(job, join(workRoot, job.id), config.viz.maxResumes))
+  // Reclaim disk from work dirs orphaned by a crash/kill (each can hold a ~0.3 GB mp4), except the resumed ones.
   if (config.dataDir !== ':memory:') {
-    try { rmSync(join(config.dataDir, 'work'), { recursive: true, force: true }) } catch { /* ignore */ }
+    let entries: string[] = []
+    try { entries = readdirSync(workRoot) } catch { /* no work dir yet */ }
+    for (const name of entries) {
+      // Resumed jobs, and failed scene jobs keeping their work for a retry.
+      if (resumed.includes(name) || isKeptWork(ctx, name)) continue
+      try { rmSync(join(workRoot, name), { recursive: true, force: true }) } catch { /* ignore */ }
+    }
+    pruneKeptWork(ctx)
+  }
+  for (const id of resumed) {
+    log('info', 'resuming scene job after restart', { jobId: id })
+    ctx.queue.enqueue(id)
   }
   return ctx
 }

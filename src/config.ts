@@ -1,4 +1,6 @@
-import type { Privacy } from './types.js'
+import { cpus } from 'node:os'
+import { join } from 'node:path'
+import { WAVE_STYLES, type Privacy, type WaveStyle } from './types.js'
 
 export interface Config {
   port: number
@@ -26,7 +28,40 @@ export interface Config {
    * polled). `token` is tracked's MKVID_TOKEN; `privacy` is what queued sets
    * are uploaded as (unlisted by default — tracked adds them to playlists).
    */
-  tracked: { url: string; token: string; pollSeconds: number; privacy: Privacy } | null
+  tracked: { url: string; token: string; pollSeconds: number; privacy: Privacy; style: WaveStyle } | null
+  /**
+   * The `scene` style (src/viz). `workers` drawing threads (default cpus - 2),
+   * `encodeSessions` segment encodes at a time (= concurrent NVENC sessions;
+   * consumer cards allow only a few), `segmentSeconds` per resumable segment.
+   */
+  viz: {
+    size: string; fps: number; workers: number; encodeSessions: number; segmentSeconds: number
+    /** Downloaded track artwork, shared by all jobs and kept across restarts. */
+    artworkCacheDir: string
+    /** A job resumed this many times in a row without finishing a new segment is marked interrupted instead (a crash loop guard). */
+    maxResumes: number
+    /** A failed render is retried this many times (resuming from finished segments) before the job fails. */
+    renderRetries: number
+    /** Wait between those retries. */
+    retryDelaySeconds: number
+    /** A scene render refuses to start (retryably) with less free space than this on the data volume. 0 = no check. */
+    minFreeGb: number
+    /** The work dir of a failed scene job (audio, segments, out.mp4) is kept this long for a retry... */
+    keepHours: number
+    /** ...and only while all kept work dirs together stay under this size (oldest go first). */
+    keepGb: number
+  }
+}
+
+function positiveInt(v: string | undefined, fallback: number): number {
+  const n = Number(v)
+  return Number.isInteger(n) && n > 0 ? n : fallback
+}
+
+function nonNegative(v: string | undefined, fallback: number): number {
+  if (v === undefined || v.trim() === '') return fallback
+  const n = Number(v)
+  return Number.isFinite(n) && n >= 0 ? n : fallback
 }
 
 function truthy(v: string | undefined): boolean {
@@ -74,7 +109,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           token: env.TRACKED_TOKEN,
           pollSeconds: Math.max(15, Number(env.TRACKED_POLL_SECONDS) || 60),
           privacy: (env.TRACKED_PRIVACY as Privacy) || 'unlisted',
+          // static until switched: the scene style changes what tracked's videos look like.
+          style: WAVE_STYLES.includes(env.TRACKED_STYLE as WaveStyle) ? env.TRACKED_STYLE as WaveStyle : 'static',
         }
       : null,
+    viz: {
+      size: /^\d+x\d+$/.test(env.VIZ_SIZE || '') ? env.VIZ_SIZE! : '1920x1080',
+      fps: positiveInt(env.VIZ_FPS, 30),
+      workers: positiveInt(env.VIZ_WORKERS, Math.max(1, cpus().length - 2)),
+      encodeSessions: positiveInt(env.VIZ_ENCODE_SESSIONS, 2),
+      segmentSeconds: positiveInt(env.VIZ_SEGMENT_SECONDS, 60),
+      artworkCacheDir: join(dataDir, 'cache', 'artwork'),
+      maxResumes: positiveInt(env.VIZ_MAX_RESUMES, 3),
+      renderRetries: Math.floor(nonNegative(env.VIZ_RENDER_RETRIES, 2)),
+      retryDelaySeconds: nonNegative(env.VIZ_RETRY_DELAY_SECONDS, 60),
+      minFreeGb: nonNegative(env.VIZ_MIN_FREE_GB, 80),
+      keepHours: nonNegative(env.VIZ_KEEP_HOURS, 72),
+      keepGb: nonNegative(env.VIZ_KEEP_GB, 200),
+    },
   }
 }

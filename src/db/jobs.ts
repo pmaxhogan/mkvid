@@ -70,6 +70,15 @@ export function makeJobsRepo(db: Database.Database) {
         .map(row)
         .filter((j) => j.meta?.origin === 'tracked' && !j.meta.reported)
     },
+    /** Back to `queued` for a retry: the error is cleared, the video (none, for a failed job) kept. */
+    requeue(id: string) {
+      db.prepare("UPDATE jobs SET status='queued', error=NULL, updated_at=@t WHERE id=@id").run({ id, t: now() })
+    },
+    /** Failed scene jobs for one tracked request, newest first (their kept work can be adopted by a new claim). */
+    failedSceneJobsForRequest(requestId: string, excludeId: string): Job[] {
+      return (db.prepare(`SELECT * FROM jobs WHERE status='failed' AND style='scene' AND id<>? AND meta IS NOT NULL
+        AND json_extract(meta, '$.requestId')=? ORDER BY created_at DESC`).all(excludeId, requestId) as any[]).map(row)
+    },
     appendLog(id: string, line: string) {
       db.prepare('INSERT INTO job_logs (job_id, ts, line) VALUES (?,?,?)').run(id, now(), line)
     },
@@ -78,8 +87,27 @@ export function makeJobsRepo(db: Database.Database) {
         .all(id, limit) as any[]).map((r) => r.line)
     },
     markRunningInterrupted() {
+      this.recoverAfterRestart()
+    },
+    /**
+     * Boot-time recovery: every job caught mid-run becomes `interrupted`,
+     * except those `resume` accepts (scene jobs mid-render whose work dir is
+     * kept), which go back to `queued`. Returns the resumed ids, oldest
+     * first, for the caller to enqueue.
+     */
+    recoverAfterRestart(resume: (job: Job) => boolean = () => false): string[] {
       const ph = RUNNING.map(() => '?').join(',')
-      db.prepare(`UPDATE jobs SET status='interrupted', updated_at=? WHERE status IN (${ph})`).run(now(), ...RUNNING)
+      const found = (db.prepare(`SELECT * FROM jobs WHERE status IN (${ph}) ORDER BY created_at ASC`).all(...RUNNING) as any[]).map(row)
+      const resumed: string[] = []
+      const t = now()
+      const set = db.prepare('UPDATE jobs SET status=@s, updated_at=@t WHERE id=@id')
+      for (const job of found) {
+        let again = false
+        try { again = resume(job) } catch { again = false }
+        set.run({ id: job.id, s: again ? 'queued' : 'interrupted', t })
+        if (again) resumed.push(job.id)
+      }
+      return resumed
     },
   }
 }

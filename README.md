@@ -56,6 +56,68 @@ only once tracked acknowledged it, and every poll retries undelivered ones —
 so a network blip or a restart between upload and report never renders a set
 twice. Tracked jobs show `[tracked]` in the job list, linking the set page.
 
+## Scene style
+
+`style: "scene"` (API only for now, or `TRACKED_STYLE=scene` for tracked's
+jobs) draws every frame in Node (`src/viz`, `@napi-rs/canvas`) instead of one
+ffmpeg filter graph: blurred artwork background, the current track's artwork
+inside a circular spectrum, artist and title with a crossfade at each cue,
+and a timeline of the set. 1920x1080, 30 fps, H.264.
+
+- **Inputs.** The audio is analysed once (`viz/analysis.ts`, per-frame
+  spectrum, energy, bass, onsets). Track list and trust flag come from
+  tracked's claim (`meta.tracks`, `meta.tracksTrusted`). A track without a cue
+  is dropped, except the first, which starts at 0. A layered ("w/") track
+  belongs to the preceding non-layered track: without a cue it starts with it,
+  an earlier cue is clamped to it, it is dropped with it, and one cued at or
+  after the next track is dropped (never visible). List order is kept; a track
+  cued before the previous one is dropped. An untrusted list (possible
+  1001tracklists decoy names) keeps cues and artwork but shows no names. Track
+  artwork is downloaded into `$DATA_DIR/cache/artwork` (keyed by URL hash,
+  images only, 15 MB cap). The set artwork is the source's thumbnail via yt-dlp.
+- **Segments.** The timeline is cut into `VIZ_SEGMENT_SECONDS` (60 s)
+  segments. `VIZ_WORKERS` threads draw frames and `VIZ_ENCODE_SESSIONS`
+  segments encode at once. Every drawing thread feeds every encoder, frame by
+  frame. A segment is encoded to `seg-NNNNN.mp4.partial` and renamed once
+  ffprobe has counted its frames. All segments of a job use one encoder
+  (NVENC when it opens, else libx264): segments from two encoders cannot be
+  joined by stream copy.
+- **Assemble.** Concat demuxer (stream copy), audio as for the other styles
+  (copy aac/mp3/alac, else AAC 192k), `+faststart`. The duration is checked
+  against the audio.
+- **Resume.** `work/<job>/viz/manifest.json` records the input fingerprint:
+  audio size and mtime, size, fps, segment length, the hash of the scene input
+  (titles, tracks, artwork bytes), the hash of the scene/analysis code and
+  fonts, and the encoder settings. It also lists finished segments. On start,
+  matching finished segments are skipped. Any mismatch discards them all
+  (mixing old and new drawing code in one video is never right).
+- **Restarts.** At boot, a scene job caught mid-run with its audio downloaded
+  and no video yet goes back to `queued` with its work dir kept, instead of
+  `interrupted`. The download is skipped (the audio is kept, never
+  re-downloaded) and rendering resumes from the finished segments. After
+  `VIZ_MAX_RESUMES` (3) restarts in a row without a new finished segment it is marked interrupted (image updates during a long render are harmless), so a job that
+  crashes the process cannot loop forever. Jobs of the other styles behave as
+  before.
+- **Failures.** A failed render is retried `VIZ_RENDER_RETRIES` (2) times after
+  `VIZ_RETRY_DELAY_SECONDS` (60), resuming from the finished segments. A render
+  refuses to start with less than `VIZ_MIN_FREE_GB` (80) free on the data
+  volume (retryable). When a scene job fails while rendering or uploading, its
+  work dir (audio, segments, analysis, and a finished `out.mp4`) is kept for
+  `VIZ_KEEP_HOURS` (72) within `VIZ_KEEP_GB` (200, oldest dropped first).
+  `POST /api/jobs/:id/retry` requeues such a job (UI jobs; a finished
+  `out.mp4` is uploaded without rendering again). A tracked job is retried by
+  tracked as a new job, which adopts the kept work of the failed job for the
+  same request and audio URL. Download failures and the other styles behave as
+  before.
+
+Review the look on a local file, rendering a 20 s window with the real scene
+and writing four PNG stills:
+
+```bash
+FFMPEG_PATH=... FFPROBE_PATH=... npx tsx src/viz/preview.ts --audio set.m4a --from 600 --seconds 20 \
+  --out preview.mp4 --tracks tracks.json --artwork cover.jpg --title "Set title" --artist "DJ" --stills stills/
+```
+
 ## Architecture
 
 A single Node/TypeScript service (Hono + `@hono/node-server`):

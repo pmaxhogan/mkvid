@@ -61,14 +61,24 @@ export function downloadAudio(
     p.on('error', reject)
     p.on('close', (code) => {
       if (code !== 0) return reject(new Error(`yt-dlp exit ${code}: ${err.slice(-2000)}`))
-      // Exclude our own render artifacts by exact name (they don't exist yet at
-      // download time, but be safe) and yt-dlp partial files — not all .mp4, since
-      // a non-SoundCloud `best` fallback can legitimately produce an .mp4 audio file.
-      const files = readdirSync(opts.workDir)
-        .filter((f) => f !== 'wave.png' && f !== 'out.mp4' && !f.endsWith('.part') && !f.endsWith('.ytdl'))
-      if (files.length === 0) return reject(new Error('yt-dlp produced no audio file'))
-      const file = join(opts.workDir, files[0])
-      resolve({ file, title: basename(files[0], extname(files[0])) })
+      const picked = pickDownloadedFile(opts.workDir)
+      if (!picked) return reject(new Error('yt-dlp produced no audio file'))
+      resolve(picked)
     })
   })
+}
+
+/**
+ * The file yt-dlp just wrote into `workDir`. Excludes our own render
+ * artifacts by exact name (they don't exist yet at download time, but be
+ * safe) and yt-dlp partial files — not all .mp4, since a non-SoundCloud
+ * `best` fallback can legitimately produce an .mp4 audio file. Directories
+ * (the scene style's viz/) are never the download.
+ */
+export function pickDownloadedFile(workDir: string): { file: string; title: string } | null {
+  const files = readdirSync(workDir, { withFileTypes: true })
+    .filter((d) => d.isFile()).map((d) => d.name)
+    .filter((f) => f !== 'wave.png' && f !== 'out.mp4' && !f.endsWith('.part') && !f.endsWith('.ytdl'))
+  if (files.length === 0) return null
+  return { file: join(workDir, files[0]), title: basename(files[0], extname(files[0])) }
 }

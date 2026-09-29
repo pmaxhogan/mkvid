@@ -59,10 +59,16 @@ const connected = (ctx: ReturnType<typeof buildContext>) =>
 
 describe('config', () => {
   it('parses the tracked settings, trims the URL, defaults poll + privacy', () => {
-    expect(cfg.tracked).toEqual({ url: 'https://tracked.example', token: 'mk', pollSeconds: 60, privacy: 'unlisted' })
+    expect(cfg.tracked).toEqual({ url: 'https://tracked.example', token: 'mk', pollSeconds: 60, privacy: 'unlisted', style: 'static' })
     expect(loadConfig({} as any).tracked).toBeNull()
     expect(loadConfig({ TRACKED_URL: 'x' } as any).tracked).toBeNull()
     expect(loadConfig({ TRACKED_URL: 'x', TRACKED_TOKEN: 't', TRACKED_POLL_SECONDS: '5', TRACKED_PRIVACY: 'private' } as any).tracked).toMatchObject({ pollSeconds: 15, privacy: 'private' })
+  })
+  it('TRACKED_STYLE picks the style of tracked jobs, static unless a known style is named', () => {
+    const env = { TRACKED_URL: 'x', TRACKED_TOKEN: 't' }
+    expect(loadConfig({ ...env, TRACKED_STYLE: 'scene' } as any).tracked!.style).toBe('scene')
+    expect(loadConfig({ ...env, TRACKED_STYLE: 'waves' } as any).tracked!.style).toBe('waves')
+    expect(loadConfig({ ...env, TRACKED_STYLE: 'fancy' } as any).tracked!.style).toBe('static')
   })
 })
 
@@ -146,6 +152,22 @@ describe('pollTracked', () => {
     expect(ctx.jobs.get((r2 as { jobId: string }).jobId)!.meta).toMatchObject({ account: 'primary' })
   })
 
+  it('with TRACKED_STYLE=scene, creates a scene job carrying the track list, its trust flag and the track count', async () => {
+    const tracks = [
+      { cueSeconds: null, artist: 'A', title: 'One', artworkUrl: 'https://img.example/1.jpg', isId: false },
+      { cueSeconds: 300, artist: null, title: null, artworkUrl: null, isId: true },
+    ]
+    const client = fakeClient([{ ...request, tracks, tracksTrusted: false }])
+    const ctx = buildContext({ ...diskCfg, tracked: { ...diskCfg.tracked!, style: 'scene' } }, { tracked: client })
+    openContexts.push(ctx)
+    connected(ctx)
+    const r = await pollTracked(ctx, client, { probe: async () => 3700, resolve: async (u) => u })
+    const job = ctx.jobs.get((r as { jobId: string }).jobId)!
+    expect(job.style).toBe('scene')
+    expect(job.meta).toMatchObject({ tracks, tracksTrusted: false, trackCount: 20 })
+    await vi.waitFor(() => expect(ctx.queue.size).toBe(0), { timeout: 5000 })
+  })
+
   it('idles when tracked has nothing queued', async () => {
     const client = fakeClient([])
     const ctx = buildContext(cfg, { tracked: client })
@@ -182,7 +204,7 @@ describe('pollTracked', () => {
     const jobId = (r as { jobId: string }).jobId
     const job = ctx.jobs.get(jobId)!
     expect(job).toMatchObject({ url: request.sourceUrl, title: request.setTitle, privacy: 'unlisted', style: 'static' })
-    expect(job.meta).toEqual({ origin: 'tracked', account: 'primary', requestId: request.id, setUrl: request.setUrl, sourceUrl: request.sourceUrl, lastCueSeconds: 3600, artistName: 'DJ' })
+    expect(job.meta).toEqual({ origin: 'tracked', account: 'primary', requestId: request.id, setUrl: request.setUrl, sourceUrl: request.sourceUrl, lastCueSeconds: 3600, artistName: 'DJ', trackCount: 20 })
     expect(client.calls.find((c) => c[0] === 'job')).toEqual(['job', { id: request.id, jobId }])
     // While the job is running the slot is busy.
     expect(await pollTracked(ctx, client)).toEqual({ action: 'busy' })

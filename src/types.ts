@@ -1,4 +1,6 @@
-export type WaveStyle = 'static' | 'waves'
+/** `scene`: the frame-by-frame visualizer in src/viz (artwork, track names, spectrum); the others are single ffmpeg graphs. */
+export type WaveStyle = 'static' | 'waves' | 'scene'
+export const WAVE_STYLES: readonly WaveStyle[] = ['static', 'waves', 'scene']
 export type WaveMode = 'line' | 'p2p' | 'cline' | 'point'
 export type Privacy = 'private' | 'unlisted' | 'public'
 export type JobStatus =
@@ -29,6 +31,17 @@ export interface JobInput {
 export type UploadAccount = 'primary' | 'shared'
 export const UPLOAD_ACCOUNTS: readonly UploadAccount[] = ['primary', 'shared']
 
+/** One entry of tracked's track list, on the wire. */
+export interface TrackedTrack {
+  cueSeconds: number | null
+  artist: string | null
+  title: string | null
+  artworkUrl: string | null
+  isId: boolean
+  /** Plays on top of the preceding non-layered track (a "w/" row); absent = false. */
+  layered?: boolean
+}
+
 export interface JobMeta {
   origin: 'tracked'
   /** The account tracked handed this request out for (absent on jobs from before accounts existed = primary). */
@@ -42,6 +55,12 @@ export interface JobMeta {
   /** Last cue on the tracklist; a recording shorter than this is a clip, not the set. */
   lastCueSeconds: number | null
   artistName: string | null
+  /** The set's track list as tracked's claim delivered it (absent from Workers that do not send it). */
+  tracks?: TrackedTrack[]
+  /** false when 1001tracklists may have served decoy names: the video then shows no artist/title. */
+  tracksTrusted?: boolean
+  /** Number of tracks on the tracklist, as tracked counted them. */
+  trackCount?: number | null
   /** Set once the outcome has been delivered to tracked (survives restarts). */
   reported?: boolean
 }

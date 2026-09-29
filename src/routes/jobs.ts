@@ -7,11 +7,12 @@ import { z } from 'zod'
 import type { AppContext } from '../context.js'
 import { UPLOAD_PREFIX, MAX_MULTIPART_BYTES, isAllowedAudioExt, sanitizeUploadName } from '../lib/upload.js'
 import { uploadSessionFile } from './uploads.js'
+import { isKeptWork } from '../lib/pipeline.js'
 
 const options = z.object({
   title: z.string().trim().max(100).optional(),
   privacy: z.enum(['private', 'unlisted', 'public']).optional(),
-  style: z.enum(['static', 'waves']).optional(),
+  style: z.enum(['static', 'waves', 'scene']).optional(),
 })
 // http(s) only: the upload:// marker is reserved for the upload paths, and a
 // JSON-submitted upload://../../x would traverse out of the work dir in the pipeline.
@@ -84,6 +85,20 @@ export function jobsRoutes(ctx: AppContext): Hono {
     })
     ctx.queue.enqueue(id)
     return c.json({ id })
+  })
+  // Retry a failed scene job from its kept work (finished segments, or a
+  // finished out.mp4 whose upload failed). tracked's jobs are retried by
+  // tracked itself: its next claim of the request adopts the kept work.
+  app.post('/:id/retry', (c) => {
+    const job = ctx.jobs.get(c.req.param('id'))
+    if (!job) return c.json({ error: 'not_found' }, 404)
+    if (job.style !== 'scene' || job.status !== 'failed') return c.json({ error: 'not_retryable', detail: 'only failed scene jobs can be retried' }, 409)
+    if (job.meta?.origin === 'tracked') return c.json({ error: 'tracked_job', detail: 'tracked retries this request itself and reuses the kept work' }, 409)
+    if (!isKeptWork(ctx, job.id)) return c.json({ error: 'nothing_kept', detail: 'the work dir is gone (expired or over VIZ_KEEP_GB); submit the set again' }, 409)
+    ctx.jobs.requeue(job.id)
+    ctx.jobs.appendLog(job.id, 'retry requested')
+    ctx.queue.enqueue(job.id)
+    return c.json({ id: job.id })
   })
   app.get('/', (c) => c.json({ jobs: ctx.jobs.list(50) }))
   app.get('/:id', (c) => {

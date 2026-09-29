@@ -20,13 +20,15 @@
  *   3. resolve the source (hearthis embed → track page), probe its duration
  *      and refuse a recording shorter than the tracklist's last cue
  *      (`incomplete_recording`, permanent — a clip is not the set);
- *   4. create the job and hand it to the normal pipeline.
+ *   4. create the job (style `TRACKED_STYLE`, default static; the track list
+ *      rides along in the job meta for the scene style) and hand it to the
+ *      normal pipeline.
  */
 
 import { randomUUID } from 'node:crypto'
 import type { AppContext } from '../context.js'
 import type { Config } from '../config.js'
-import type { Job, JobMeta, UploadAccount } from '../types.js'
+import type { Job, JobMeta, TrackedTrack, UploadAccount } from '../types.js'
 import { probeDuration } from './ytdlp.js'
 import { resolveSourceUrl } from './sources.js'
 import { log } from './log.js'
@@ -45,6 +47,10 @@ export interface TrackedRequest {
   attempts: number
   /** Which account (Google project) to upload through; a Worker from before accounts existed sends none = primary. */
   account?: UploadAccount
+  /** The set's track list for the `scene` style; absent from Workers that predate it. */
+  tracks?: TrackedTrack[]
+  /** false when the names may be 1001tracklists decoys (then only cues + artwork are shown). */
+  tracksTrusted?: boolean
 }
 
 export interface TrackedClient {
@@ -193,9 +199,11 @@ export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: 
   const meta: JobMeta = {
     origin: 'tracked', account, requestId: req.id, setUrl: req.setUrl, sourceUrl: req.sourceUrl,
     lastCueSeconds: req.lastCueSeconds, artistName: req.artistName,
+    ...(Array.isArray(req.tracks) ? { tracks: req.tracks, tracksTrusted: req.tracksTrusted === true } : {}),
+    trackCount: req.trackCount ?? null,
   }
   const id = randomUUID()
-  ctx.jobs.create({ id, url, title: req.setTitle, privacy: cfg.privacy, style: 'static', meta })
+  ctx.jobs.create({ id, url, title: req.setTitle, privacy: cfg.privacy, style: cfg.style, meta })
   await client.job(req.id, id).catch((e: any) => log('warn', 'tracked: could not attach job id', { requestId: req.id, err: String(e?.message || e) }))
   ctx.queue.enqueue(id)
   log('info', 'tracked: job started', { jobId: id, requestId: req.id, url, duration, lastCue: req.lastCueSeconds })

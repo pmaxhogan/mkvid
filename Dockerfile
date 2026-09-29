@@ -24,8 +24,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package*.json ./
+# Includes @napi-rs/canvas, which ships a prebuilt linux-x64-gnu binary (Skia):
+# the scene style needs no system graphics or font packages.
 RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
+# Fonts for the scene style. The image has no fontconfig; dist/viz/scene
+# finds them at ../../../assets/fonts, i.e. /app/assets/fonts.
+COPY assets ./assets
 COPY deploy/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 EXPOSE 8080
