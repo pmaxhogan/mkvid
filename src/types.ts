@@ -57,7 +57,7 @@ export interface JobMeta {
   artistName: string | null
   /** The set's track list as tracked's claim delivered it (absent from Workers that do not send it). */
   tracks?: TrackedTrack[]
-  /** false when 1001tracklists may have served decoy names: the video then shows no artist/title. */
+  /** true = verified (two fetches by different accounts agreed). A scene job renders nothing else. */
   tracksTrusted?: boolean
   /** Number of tracks on the tracklist, as tracked counted them. */
   trackCount?: number | null
@@ -76,6 +76,10 @@ export interface Job {
   style: WaveStyle
   videoId: string | null
   videoUrl: string | null
+  /** The visual style the uploaded video was made with (null = no upload yet; pre-existing uploads were backfilled as static). */
+  uploadStyle: WaveStyle | null
+  /** When mkvid deleted the uploaded video from YouTube (tracked's "Delete and recreate"); null = still up. */
+  videoDeletedAt: number | null
   error: string | null
   meta: JobMeta | null
   createdAt: number

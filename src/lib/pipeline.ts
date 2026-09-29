@@ -5,6 +5,7 @@ import type { Job, SseMessage } from '../types.js'
 import type { VizInput } from '../viz/types.js'
 import { renderScene, hashInput, sceneCodeVersion } from '../viz/render.js'
 import { downloadSetArtwork, resolveVizTracks, vizTracksFromTracked } from '../viz/assets.js'
+import { unverifiedTrackedScene } from './tracked.js'
 import { downloadAudio } from './ytdlp.js'
 import { probeAudio } from './probe.js'
 import { chooseFps, chooseAudioArgs, renderVideo } from './ffmpeg.js'
@@ -224,10 +225,11 @@ async function renderSceneForJob(
     const setArtworkPath = job.url.startsWith(UPLOAD_PREFIX)
       ? null
       : await downloadSetArtwork({ ytdlpPath: config.ytdlpPath, ffmpegPath: config.ffmpegPath, url: job.url, outDir: vizDir }, logLine)
-    const planned = vizTracksFromTracked(job.meta?.tracks, job.meta?.tracksTrusted === true)
+    const planned = vizTracksFromTracked(job.meta?.tracks)
     const tracks = await resolveVizTracks(planned, config.viz.artworkCacheDir, { onLog: logLine })
     const withArt = tracks.filter((t) => t.artworkPath).length
-    logLine(`viz: ${tracks.length} track(s), ${withArt} with artwork, names ${job.meta?.tracksTrusted ? 'shown' : 'hidden (untrusted or none)'}; set artwork ${setArtworkPath ? 'found' : 'none'}`)
+    const named = tracks.filter((t) => t.artist || t.title).length
+    logLine(`viz: ${tracks.length} track(s), ${named} named, ${withArt} with artwork; set artwork ${setArtworkPath ? 'found' : 'none'}`)
     input = {
       audioPath: a.audioPath, durationSeconds: a.duration, setTitle: a.title, setArtist: job.meta?.artistName ?? null,
       setArtworkPath, tracks, width, height, fps: config.viz.fps,
@@ -289,6 +291,10 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
   let stage: 'download' | 'render' | 'upload' | 'done' = 'download'
 
   try {
+    // A tracked scene job renders a verified track list or nothing (also
+    // catches a job queued, or resumed, from before this rule).
+    const unverified = unverifiedTrackedScene(job)
+    if (unverified) throw new Error(unverified)
     if (scene) {
       rmSync(join(workDir, VIZ_DIR, KEPT_FILE), { force: true }) // running again (retry): not a kept dir any more
       adoptKeptWork(ctx, job, workDir, logLine)
@@ -358,7 +364,7 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
       },
       (p) => emit({ type: 'progress', phase: 'upload', percent: p }),
     )
-    jobs.setResult(jobId, videoId, videoUrl, privacyApplied)
+    jobs.setResult(jobId, videoId, videoUrl, privacyApplied, job.style)
     stage = 'done'
     if (privacyApplied && privacyApplied !== job.privacy) {
       logLine(`warning: requested ${job.privacy} but YouTube set ${privacyApplied} (unverified OAuth apps are forced to private)`)

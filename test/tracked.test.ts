@@ -157,15 +157,50 @@ describe('pollTracked', () => {
       { cueSeconds: null, artist: 'A', title: 'One', artworkUrl: 'https://img.example/1.jpg', isId: false },
       { cueSeconds: 300, artist: null, title: null, artworkUrl: null, isId: true },
     ]
-    const client = fakeClient([{ ...request, tracks, tracksTrusted: false }])
+    const client = fakeClient([{ ...request, tracks, tracksTrusted: true }])
     const ctx = buildContext({ ...diskCfg, tracked: { ...diskCfg.tracked!, style: 'scene' } }, { tracked: client })
     openContexts.push(ctx)
     connected(ctx)
     const r = await pollTracked(ctx, client, { probe: async () => 3700, resolve: async (u) => u })
     const job = ctx.jobs.get((r as { jobId: string }).jobId)!
     expect(job.style).toBe('scene')
-    expect(job.meta).toMatchObject({ tracks, tracksTrusted: false, trackCount: 20 })
+    expect(job.meta).toMatchObject({ tracks, tracksTrusted: true, trackCount: 20 })
     await vi.waitFor(() => expect(ctx.queue.size).toBe(0), { timeout: 5000 })
+  })
+
+  it.each([
+    ['untrusted', { tracks: [{ cueSeconds: 0, artist: 'A', title: 'B', artworkUrl: null, isId: false }], tracksTrusted: false }],
+    ['trust flag missing', { tracks: [{ cueSeconds: 0, artist: 'A', title: 'B', artworkUrl: null, isId: false }] }],
+    ['trusted but empty', { tracks: [], tracksTrusted: true }],
+    ['no list at all', {}],
+  ])('with TRACKED_STYLE=scene, refuses an unverified list (%s) before downloading: not permanent, no job', async (_label, extra) => {
+    const client = fakeClient([{ ...request, ...extra } as TrackedRequest])
+    const ctx = buildContext({ ...cfg, tracked: { ...cfg.tracked!, style: 'scene' } }, { tracked: client })
+    connected(ctx)
+    const probe = vi.fn(async () => 3700)
+    const resolve = vi.fn(async (u: string) => u)
+    const r = await pollTracked(ctx, client, { probe, resolve })
+    expect(r).toMatchObject({ action: 'refused', requestId: request.id, reason: expect.stringMatching(/^unverified_tracklist: /) })
+    expect(client.calls.at(-1)).toEqual(['fail', { id: request.id, error: expect.stringMatching(/^unverified_tracklist: /), permanent: false, jobId: null }])
+    expect(isPermanentFailure((r as { reason: string }).reason)).toBe(false)
+    expect(resolve).not.toHaveBeenCalled()
+    expect(probe).not.toHaveBeenCalled()
+    expect(ctx.jobs.list(10)).toEqual([])
+  })
+
+  it('a tracked scene job with an unverified list fails at the start of the pipeline (e.g. queued before the rule), retryably', async () => {
+    const client = fakeClient()
+    const ctx = buildContext(diskCfg, { tracked: client })
+    openContexts.push(ctx)
+    connected(ctx)
+    ctx.jobs.create({ id: 'old-scene', url: 'https://example.com/a', title: 't', privacy: 'unlisted', style: 'scene',
+      meta: { origin: 'tracked', requestId: request.id, setUrl: request.setUrl, sourceUrl: request.sourceUrl, lastCueSeconds: null, artistName: null, tracks: [], tracksTrusted: false } })
+    ctx.queue.enqueue('old-scene')
+    await vi.waitFor(() => expect(ctx.jobs.get('old-scene')!.meta!.reported).toBe(true), { timeout: 5000 })
+    const job = ctx.jobs.get('old-scene')!
+    expect(job.status).toBe('failed')
+    expect(job.error).toMatch(/^unverified_tracklist: /)
+    expect(client.calls).toContainEqual(['fail', { id: request.id, error: job.error, permanent: false, jobId: 'old-scene' }])
   })
 
   it('idles when tracked has nothing queued', async () => {
@@ -232,7 +267,7 @@ describe('reportJobToTracked', () => {
     const client = fakeClient()
     const ctx = buildContext(cfg, { tracked: client })
     expect(await reportJobToTracked(ctx, jobWith(ctx, 'done'), client)).toBe(true)
-    expect(client.calls).toEqual([['complete', { id: request.id, videoId: 'vid12345678', videoUrl: 'https://youtu.be/vid12345678', privacy: 'private', jobId: 'job-done' }]])
+    expect(client.calls).toEqual([['complete', { id: request.id, videoId: 'vid12345678', videoUrl: 'https://youtu.be/vid12345678', privacy: 'private', jobId: 'job-done', style: 'static' }]])
     expect(ctx.jobs.get('job-done')!.meta!.reported).toBe(true)
   })
 

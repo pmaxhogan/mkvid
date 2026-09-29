@@ -4,7 +4,7 @@
  *
  *   npx tsx src/viz/preview.ts --audio set.m4a --from 1800 --seconds 20 --out preview.mp4 \
  *     [--tracks tracks.json] [--artwork cover.jpg] [--title "Set title"] [--artist "DJ"] \
- *     [--stills dir] [--still-count 4] [--workers 10] [--encoder auto|nvenc|x264] [--size 1920x1080] [--fps 30] [--keep]
+ *     [--stills dir] [--still-count 4] [--workers 10] [--encoder auto|nvenc|x264] [--size 1920x1080] [--fps 30] [--keep] [--untrusted]
  *   npx tsx src/viz/preview.ts --selftest [--encoder nvenc]    (in the image: node dist/viz/preview.js --selftest)
  *
  * The whole file is analysed (features are normalised over the recording, as
@@ -12,7 +12,8 @@
  * job's segments, and muxed with the matching audio. --stills writes --still-count (4) evenly spaced PNGs
  * straight from the scene (no compression). --tracks takes tracked's wire
  * format: an array of { cueSeconds, artist, title, artworkUrl, isId, layered? }, or
- * { tracks: [...], tracksTrusted }. artworkUrl may also be a local file.
+ * { tracks: [...], tracksTrusted }. artworkUrl may also be a local file. --untrusted
+ * (developer only) hides every name, to preview what a list without names looks like.
  *
  * ffmpeg/ffprobe come from FFMPEG_PATH / FFPROBE_PATH (read from ./.env too),
  * falling back to PATH.
@@ -34,30 +35,34 @@ import {
 
 const USAGE = 'usage: npx tsx src/viz/preview.ts --audio <file> --from <seconds> --seconds <n> --out <file.mp4> ' +
   '[--tracks <tracks.json>] [--artwork <image>] [--title ...] [--artist ...] [--stills <dir>] [--still-count n] ' +
-  '[--workers n] [--encoder auto|nvenc|x264] [--size WxH] [--fps n] [--keep]\n' +
+  '[--workers n] [--encoder auto|nvenc|x264] [--size WxH] [--fps n] [--keep] [--untrusted]\n' +
   '       npx tsx src/viz/preview.ts --selftest [--encoder auto|nvenc|x264]   (canvas -> encoder colour check)'
 
 class UsageError extends Error {}
 
 function fail(msg: string): never { throw new UsageError(msg) }
 
-async function loadTracks(file: string, cacheDir: string): Promise<VizTrack[]> {
+async function loadTracks(file: string, cacheDir: string, untrusted: boolean): Promise<VizTrack[]> {
   let raw: unknown
   try { raw = JSON.parse(readFileSync(file, 'utf8')) } catch (e: any) { fail(`--tracks ${file}: ${e?.message || e}`) }
   const list = (Array.isArray(raw) ? raw : (raw as any)?.tracks) as TrackedTrack[] | undefined
   if (!Array.isArray(list)) fail(`--tracks ${file}: expected an array of tracks or { tracks, tracksTrusted }`)
-  const trusted = Array.isArray(raw) ? true : (raw as any).tracksTrusted !== false
+  // Developer flag only (--untrusted): preview a list with every name hidden. The tracked
+  // job path has no such mode — it renders a verified list or nothing.
+  const trusted = !untrusted
+  if (!Array.isArray(raw) && (raw as any).tracksTrusted === false && trusted) console.warn('tracks file says tracksTrusted: false — names are shown anyway; pass --untrusted to hide them')
   // Local artwork files are allowed here (never on the wire). The converter only keeps
   // http(s) URLs, so a local file travels through it as a placeholder URL.
   const LOCAL = 'http://local.invalid/'
   const locals: string[] = []
-  const wire = list.map((t) => {
+  const wire = list.map((t0) => {
+    const t = t0 && !trusted ? { ...t0, artist: null, title: null } : t0
     if (!t || typeof t.artworkUrl !== 'string' || /^https?:\/\//i.test(t.artworkUrl)) return t
     locals.push(resolve(dirname(file), t.artworkUrl))
     return { ...t, artworkUrl: LOCAL + (locals.length - 1) }
   })
   const out: VizTrack[] = []
-  for (const t of vizTracksFromTracked(wire, trusted)) {
+  for (const t of vizTracksFromTracked(wire)) {
     let artworkPath: string | null = null
     if (t.artworkUrl?.startsWith(LOCAL)) {
       const p = locals[Number(t.artworkUrl.slice(LOCAL.length))]
@@ -96,6 +101,7 @@ async function main(): Promise<void> {
       tracks: { type: 'string' }, artwork: { type: 'string' }, title: { type: 'string' }, artist: { type: 'string' },
       stills: { type: 'string' }, 'still-count': { type: 'string' }, workers: { type: 'string' }, encoder: { type: 'string' }, size: { type: 'string' },
       fps: { type: 'string' }, keep: { type: 'boolean' }, selftest: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+      untrusted: { type: 'boolean' },
     },
     allowPositionals: false,
   })
@@ -155,7 +161,7 @@ async function main(): Promise<void> {
 
     // 2. scene input
     const cacheDir = join(tmpdir(), 'mkvid-artwork-cache')
-    const tracks = a.tracks ? await loadTracks(resolve(a.tracks), cacheDir) : []
+    const tracks = a.tracks ? await loadTracks(resolve(a.tracks), cacheDir, a.untrusted === true) : []
     const input: VizInput = {
       audioPath, durationSeconds: duration,
       setTitle: a.title ?? basename(audioPath, extname(audioPath)), setArtist: a.artist ?? null,

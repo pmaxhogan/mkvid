@@ -56,9 +56,21 @@ export function migrate(db: Database.Database): void {
   // Additive column migrations for databases created before these existed.
   addColumn(db, 'jobs', 'meta', 'TEXT')                // JSON JobMeta (origin: tracked …)
   addColumn(db, 'jobs', 'privacy_applied', 'TEXT')     // privacyStatus YouTube actually set
+  // The visual style each upload was made with (tracked recreates old-style
+  // videos). Uploads from before the column existed were all made with the
+  // old styles — the scene style never ran in production before it — and are
+  // backfilled as `static`, once, when the column is added.
+  if (addColumn(db, 'jobs', 'upload_style', 'TEXT')) {
+    db.exec("UPDATE jobs SET upload_style = 'static' WHERE video_id IS NOT NULL AND upload_style IS NULL")
+  }
+  addColumn(db, 'jobs', 'video_deleted_at', 'INTEGER')  // epoch ms mkvid deleted the upload from YouTube
+  db.exec('CREATE INDEX IF NOT EXISTS jobs_video_id ON jobs (video_id)')
 }
 
-function addColumn(db: Database.Database, table: string, column: string, type: string): void {
+/** Adds the column when missing; true when it did (a fresh migration step). */
+function addColumn(db: Database.Database, table: string, column: string, type: string): boolean {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
-  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+  if (cols.some((c) => c.name === column)) return false
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+  return true
 }

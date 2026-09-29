@@ -44,9 +44,9 @@ whenever its render slot is free and:
    tracklist's last cue — a clip is not the set;
 4. runs the normal pipeline — `static` waveform, uploaded as `TRACKED_PRIVACY`
    (default **unlisted**), the 1001tracklists URL in the description;
-5. **reports back**: `POST /mkvid/complete` with the video id and the privacy
+5. **reports back**: `POST /mkvid/complete` with the video id, the privacy
    YouTube actually applied (an unverified OAuth app forces `private` — tracked
-   shows that), or `POST /mkvid/fail` (retryable errors are re-queued by tracked
+   shows that) and the `style` the video was made with, or `POST /mkvid/fail` (retryable errors are re-queued by tracked
    with a backoff; permanent ones — unsupported/removed/private source, clip —
    are parked). tracked then adds the video to the DJ's playlist and the
    combined one.
@@ -55,6 +55,32 @@ Delivery is durable: the outcome is marked on the job row (`meta.reported`)
 only once tracked acknowledged it, and every poll retries undelivered ones —
 so a network blip or a restart between upload and report never renders a set
 twice. Tracked jobs show `[tracked]` in the job list, linking the set page.
+
+**Verified lists only (scene style).** tracked hands out a set only once its
+track list is verified (two fetches by different accounts agreed on every
+row), so a claim carries `tracksTrusted: true` and a non-empty list. With
+`TRACKED_STYLE=scene`, anything else is refused right after the claim, before
+any download: `POST /mkvid/fail { error: "unverified_tracklist: …", permanent:
+false }`, which tracked answers by putting the request back to pending without
+using an attempt. The pipeline repeats the check at the start of a tracked
+scene job (a job queued or resumed from before the rule). There is no
+names-hidden render any more: a video is made with the verified names, or not
+at all.
+
+**Deleting a replaced upload.** tracked's "Delete and recreate" renders a set
+again; once the new video is in its playlists it calls
+`POST /api/videos/<videoId>/delete { requestId }` with `Authorization: Bearer
+<TRACKED_TOKEN>` (the same shared secret, the other way). The route sits ahead
+of the Cloudflare Access check in the app (a machine caller has no Access
+user) and checks the bearer itself; at the edge the path needs a bypass policy
+or an Access service token, which tracked sends when configured. It deletes
+(`videos.delete`) only a video this database recorded as uploaded by a job for
+that tracked request, through the account (Google project) that uploaded it,
+and marks the job (`video_deleted_at`). Answers `{ ok, outcome: "deleted" |
+"already_gone" }`; `404 unknown_video` / `409 not_tracked | request_mismatch`
+when it is not ours to delete (final); `502`/`503` otherwise (tracked retries).
+Every upload records its style in `jobs.upload_style` (uploads from before the
+column were backfilled as `static`).
 
 ## Scene style
 
@@ -71,8 +97,8 @@ and a timeline of the set. 1920x1080, 30 fps, H.264.
   belongs to the preceding non-layered track: without a cue it starts with it,
   an earlier cue is clamped to it, it is dropped with it, and one cued at or
   after the next track is dropped (never visible). List order is kept; a track
-  cued before the previous one is dropped. An untrusted list (possible
-  1001tracklists decoy names) keeps cues and artwork but shows no names. Track
+  cued before the previous one is dropped. A tracked job only
+  ever gets a verified list (see "Verified lists only"); ID rows show "ID". Track
   artwork is downloaded into `$DATA_DIR/cache/artwork` (keyed by URL hash,
   images only, 15 MB cap). The set artwork is the source's thumbnail via yt-dlp.
 - **Segments.** The timeline is cut into `VIZ_SEGMENT_SECONDS` (60 s)

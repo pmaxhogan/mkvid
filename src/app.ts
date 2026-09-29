@@ -6,11 +6,14 @@ import { jobsRoutes } from './routes/jobs.js'
 import { uploadsRoutes } from './routes/uploads.js'
 import { oauthRoutes } from './routes/oauth.js'
 import { pushRoutes } from './routes/push.js'
+import { videosRoutes } from './routes/videos.js'
 
 export function buildApp(ctx: AppContext): Hono {
   const app = new Hono()
   // /healthz is registered before the gate so it stays un-gated in-app (used by local checks).
   app.get('/healthz', (c) => c.text('ok'))
+  // tracked's calls into mkvid: bearer-gated in the route (a machine caller has no Access user), so also ahead of the gate.
+  app.route('/api/videos', videosRoutes(ctx))
   app.use('*', cfAccess(ctx.config.cfAccess, ctx.kv))
   app.route('/', uiRoutes(ctx))
   app.route('/api/jobs', jobsRoutes(ctx))

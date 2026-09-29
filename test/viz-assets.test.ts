@@ -18,25 +18,26 @@ const t = (cueSeconds: number | null, artist: string | null, title: string | nul
 
 describe('vizTracksFromTracked', () => {
   it('drops tracks without a cue, except the first, which starts at 0', () => {
-    const out = vizTracksFromTracked([t(null, 'A', 'Intro'), t(120, 'B', 'Two'), t(null, 'C', 'Lost'), t(300, 'D', 'Four')], true)
+    const out = vizTracksFromTracked([t(null, 'A', 'Intro'), t(120, 'B', 'Two'), t(null, 'C', 'Lost'), t(300, 'D', 'Four')])
     expect(out).toEqual([
       { startSeconds: 0, artist: 'A', title: 'Intro', artworkUrl: null },
       { startSeconds: 120, artist: 'B', title: 'Two', artworkUrl: null },
       { startSeconds: 300, artist: 'D', title: 'Four', artworkUrl: null },
     ])
   })
-  it('an untrusted list keeps cue times and artwork but no artist or title', () => {
+  it('names are always shown (tracked sends verified lists only): there is no names-hidden mode', () => {
+    expect(vizTracksFromTracked.length).toBe(1)
     const out = vizTracksFromTracked([
-      t(0, 'Decoy', 'Name', { artworkUrl: 'https://img.example/a.jpg' }),
-      t(200, 'Other', 'Decoy', { artworkUrl: 'https://img.example/b.jpg' }),
-    ], false)
+      t(0, 'Real', 'Name', { artworkUrl: 'https://img.example/a.jpg' }),
+      t(200, 'Other', 'Track', { artworkUrl: 'https://img.example/b.jpg' }),
+    ])
     expect(out).toEqual([
-      { startSeconds: 0, artist: null, title: null, artworkUrl: 'https://img.example/a.jpg' },
-      { startSeconds: 200, artist: null, title: null, artworkUrl: 'https://img.example/b.jpg' },
+      { startSeconds: 0, artist: 'Real', title: 'Name', artworkUrl: 'https://img.example/a.jpg' },
+      { startSeconds: 200, artist: 'Other', title: 'Track', artworkUrl: 'https://img.example/b.jpg' },
     ])
   })
   it('an ID track has no names; artwork survives; blanks become null', () => {
-    const out = vizTracksFromTracked([t(0, 'X', 'Y', { isId: true, artworkUrl: 'https://img.example/id.jpg' }), t(60, '  ', ' Title ')], true)
+    const out = vizTracksFromTracked([t(0, 'X', 'Y', { isId: true, artworkUrl: 'https://img.example/id.jpg' }), t(60, '  ', ' Title ')])
     expect(out).toEqual([
       { startSeconds: 0, artist: null, title: null, artworkUrl: 'https://img.example/id.jpg' },
       { startSeconds: 60, artist: null, title: 'Title', artworkUrl: null },
@@ -46,14 +47,14 @@ describe('vizTracksFromTracked', () => {
     const out = vizTracksFromTracked([
       t(100, 'first', 'x'), null as any, t(-3, 'neg', 'x'), t(Number.NaN, 'nan', 'x'),
       t(100, 'a', '1', { artworkUrl: 'javascript:alert(1)' }), t(500, 'b', '2', { artworkUrl: 'file:///etc/passwd' }),
-    ], true)
+    ])
     expect(out.map((x) => [x.startSeconds, x.artist, x.artworkUrl])).toEqual([[100, 'first', null], [100, 'a', null], [500, 'b', null]])
-    expect(vizTracksFromTracked(undefined, true)).toEqual([])
-    expect(vizTracksFromTracked(null, false)).toEqual([])
-    expect(vizTracksFromTracked([], true)).toEqual([])
+    expect(vizTracksFromTracked(undefined)).toEqual([])
+    expect(vizTracksFromTracked(null)).toEqual([])
+    expect(vizTracksFromTracked([])).toEqual([])
   })
   it('keeps list order: a non-layered track cued before the previous kept one is dropped, not reordered', () => {
-    const out = vizTracksFromTracked([t(0, 'A', 'a'), t(300, 'B', 'b'), t(200, 'bad', 'data'), t(300, 'C', 'same cue'), t(400, 'D', 'd')], true)
+    const out = vizTracksFromTracked([t(0, 'A', 'a'), t(300, 'B', 'b'), t(200, 'bad', 'data'), t(300, 'C', 'same cue'), t(400, 'D', 'd')])
     expect(out.map((x) => [x.startSeconds, x.artist])).toEqual([[0, 'A'], [300, 'B'], [300, 'C'], [400, 'D']])
   })
 })
@@ -63,53 +64,53 @@ describe('vizTracksFromTracked: layered tracks', () => {
   const brief = (out: ReturnType<typeof vizTracksFromTracked>) => out.map((x) => [x.startSeconds, x.artist, x.layered === true])
 
   it('a missing layered field means not layered; layered is only set when true', () => {
-    const out = vizTracksFromTracked([t(0, 'A', 'a'), t(60, 'B', 'b', { layered: false })], true)
+    const out = vizTracksFromTracked([t(0, 'A', 'a'), t(60, 'B', 'b', { layered: false })])
     expect(out.every((x) => !('layered' in x))).toBe(true)
   })
   it('a layered entry without a cue is kept and starts with its base', () => {
-    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(120, 'B', 'b'), L(null, 'B2'), L(null, 'B3'), t(300, 'C', 'c')], true)))
+    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(120, 'B', 'b'), L(null, 'B2'), L(null, 'B3'), t(300, 'C', 'c')])))
       .toEqual([[0, 'A', false], [120, 'B', false], [120, 'B2', true], [120, 'B3', true], [300, 'C', false]])
   })
   it('a layered entry with its own cue keeps it', () => {
-    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), L(45, 'A2'), t(300, 'B', 'b')], true)))
+    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), L(45, 'A2'), t(300, 'B', 'b')])))
       .toEqual([[0, 'A', false], [45, 'A2', true], [300, 'B', false]])
   })
   it('a layered cue earlier than its base is clamped to the base start', () => {
-    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(200, 'B', 'b'), L(150, 'B2')], true)))
+    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(200, 'B', 'b'), L(150, 'B2')])))
       .toEqual([[0, 'A', false], [200, 'B', false], [200, 'B2', true]])
   })
   it('a layered entry whose base was dropped (no cue, or cued out of order) is dropped', () => {
-    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(null, 'gone', 'x'), L(90, 'orphan1'), L(null, 'orphan2'), t(300, 'B', 'b')], true)))
+    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(null, 'gone', 'x'), L(90, 'orphan1'), L(null, 'orphan2'), t(300, 'B', 'b')])))
       .toEqual([[0, 'A', false], [300, 'B', false]])
-    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(300, 'B', 'b'), t(100, 'bad', 'x'), L(310, 'orphan'), t(400, 'C', 'c')], true)))
+    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(300, 'B', 'b'), t(100, 'bad', 'x'), L(310, 'orphan'), t(400, 'C', 'c')])))
       .toEqual([[0, 'A', false], [300, 'B', false], [400, 'C', false]])
   })
   it('the first kept track is never layered: a layered first entry becomes an ordinary track (at 0 without a cue)', () => {
-    const out = vizTracksFromTracked([L(null, 'first'), L(30, 'on first'), t(100, 'B', 'b')], true)
+    const out = vizTracksFromTracked([L(null, 'first'), L(30, 'on first'), t(100, 'B', 'b')])
     expect(brief(out)).toEqual([[0, 'first', false], [30, 'on first', true], [100, 'B', false]])
     expect('layered' in out[0]).toBe(false)
-    expect(brief(vizTracksFromTracked([L(20, 'first')], true))).toEqual([[20, 'first', false]])
+    expect(brief(vizTracksFromTracked([L(20, 'first')]))).toEqual([[20, 'first', false]])
   })
   it('layered tracks directly follow their base, in list order', () => {
-    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), L(50, 'A3'), L(30, 'A2'), t(100, 'B', 'b'), L(null, 'B2')], true)))
+    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), L(50, 'A3'), L(30, 'A2'), t(100, 'B', 'b'), L(null, 'B2')])))
       .toEqual([[0, 'A', false], [50, 'A3', true], [30, 'A2', true], [100, 'B', false], [100, 'B2', true]])
   })
   it('a layered track cued at or after the next base could never be shown and is dropped', () => {
-    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), L(100, 'late'), L(150, 'later'), L(99, 'ok'), t(100, 'B', 'b')], true)))
+    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), L(100, 'late'), L(150, 'later'), L(99, 'ok'), t(100, 'B', 'b')])))
       .toEqual([[0, 'A', false], [99, 'ok', true], [100, 'B', false]])
   })
-  it('an untrusted list hides names but keeps cues, artwork and layering', () => {
+  it('ID rows keep their cue, artwork and layering but no names', () => {
     const out = vizTracksFromTracked([
-      t(0, 'A', 'a'), L(null, 'B', { artworkUrl: 'https://img.example/b.jpg' }), t(100, 'C', 'c'),
-    ], false)
+      t(0, 'A', 'a'), L(null, 'B', { artworkUrl: 'https://img.example/b.jpg', isId: true }), t(100, null, null, { isId: true }),
+    ])
     expect(out).toEqual([
-      { startSeconds: 0, artist: null, title: null, artworkUrl: null },
+      { startSeconds: 0, artist: 'A', title: 'a', artworkUrl: null },
       { startSeconds: 0, artist: null, title: null, artworkUrl: 'https://img.example/b.jpg', layered: true },
       { startSeconds: 100, artist: null, title: null, artworkUrl: null },
     ])
   })
   it('resolveVizTracks carries layered through to the scene input', async () => {
-    const out = await resolveVizTracks(vizTracksFromTracked([t(0, 'A', 'a'), L(null, 'B')], true), join(tmp, 'c7'), { fetcher: fakeFetch(() => img(PNG)) })
+    const out = await resolveVizTracks(vizTracksFromTracked([t(0, 'A', 'a'), L(null, 'B')]), join(tmp, 'c7'), { fetcher: fakeFetch(() => img(PNG)) })
     expect(out).toEqual([
       { startSeconds: 0, artist: 'A', title: 'a', artworkPath: null },
       { startSeconds: 0, artist: 'B', title: 'w/', artworkPath: null, layered: true },

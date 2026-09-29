@@ -46,12 +46,15 @@ function text(v: unknown): string | null {
  *     keeps the list sorted by start as VizTrack requires;
  *   - the first kept track is never layered (a layered first entry has no
  *     base and is treated as an ordinary track);
- *   - an untrusted list (1001tracklists served decoy names) keeps cue times,
- *     artwork and layering but loses every artist and title: wrong names
- *     burned into a video cannot be corrected later;
- *   - an ID track has no names either.
+ *   - an ID track has no names (the scene shows "ID").
+ *
+ * Only a verified list gets here: tracked hands out verified lists only, and
+ * a tracked scene job refuses anything else before downloading
+ * (`unverified_tracklist`, lib/tracked.ts + lib/pipeline.ts). There is no
+ * names-hidden render of an untrusted list any more: wrong names burned into
+ * a video cannot be corrected later, and a video without them is not made.
  */
-export function vizTracksFromTracked(tracks: readonly TrackedTrack[] | null | undefined, trusted: boolean): PlannedTrack[] {
+export function vizTracksFromTracked(tracks: readonly TrackedTrack[] | null | undefined): PlannedTrack[] {
   if (!Array.isArray(tracks)) return []
   const out: PlannedTrack[] = []
   /** The current base: none yet, kept (at out[index]), or dropped. */
@@ -59,7 +62,7 @@ export function vizTracksFromTracked(tracks: readonly TrackedTrack[] | null | un
   tracks.forEach((t, i) => {
     if (!t || typeof t !== 'object') return
     const cue = typeof t.cueSeconds === 'number' && Number.isFinite(t.cueSeconds) && t.cueSeconds >= 0 ? t.cueSeconds : null
-    const named = trusted === true && t.isId !== true
+    const named = t.isId !== true
     const url = text(t.artworkUrl)
     const planned = (startSeconds: number, layered: boolean): PlannedTrack => ({
       startSeconds,

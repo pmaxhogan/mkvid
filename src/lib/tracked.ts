@@ -22,7 +22,13 @@
  *      (`incomplete_recording`, permanent — a clip is not the set);
  *   4. create the job (style `TRACKED_STYLE`, default static; the track list
  *      rides along in the job meta for the scene style) and hand it to the
- *      normal pipeline.
+ *      normal pipeline. The scene style refuses, before any download, a
+ *      request whose list is not verified (`tracksTrusted` not exactly true)
+ *      or is empty: `unverified_tracklist`, not permanent — tracked puts it
+ *      back to pending. It never renders with names hidden.
+ *
+ * tracked also calls in: `POST /api/videos/:id/delete` (routes/videos.ts)
+ * deletes an upload a "Delete and recreate" replaced.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -49,14 +55,14 @@ export interface TrackedRequest {
   account?: UploadAccount
   /** The set's track list for the `scene` style; absent from Workers that predate it. */
   tracks?: TrackedTrack[]
-  /** false when the names may be 1001tracklists decoys (then only cues + artwork are shown). */
+  /** true = the list is verified (two fetches by different accounts agreed). The scene style renders nothing else. */
   tracksTrusted?: boolean
 }
 
 export interface TrackedClient {
   claim(accounts: readonly UploadAccount[]): Promise<TrackedRequest | null>
   job(id: string, jobId: string): Promise<void>
-  complete(input: { id: string; videoId: string; videoUrl: string; privacy: string | null; jobId: string }): Promise<{ status: string }>
+  complete(input: { id: string; videoId: string; videoUrl: string; privacy: string | null; jobId: string; style: string }): Promise<{ status: string }>
   fail(input: { id: string; error: string; permanent: boolean; jobId: string | null }): Promise<void>
   health(): Promise<{ ok: boolean; counts?: Record<string, number> }>
 }
@@ -98,6 +104,24 @@ export function makeTrackedClient(cfg: NonNullable<Config['tracked']>, fetcher: 
   }
 }
 
+/**
+ * The scene visualizer only ever renders a verified track list: names are
+ * burned into the video and a decoy list cannot be corrected afterwards, and
+ * there is no names-hidden fallback. Returns the refusal (an error starting
+ * `unverified_tracklist`, which tracked treats as "back to pending, no attempt
+ * used") or null when the job may render.
+ */
+export function unverifiedTrackedScene(job: Pick<Job, 'style' | 'meta'>): string | null {
+  if (job.style !== 'scene' || job.meta?.origin !== 'tracked') return null
+  return unverifiedList(job.meta.tracks, job.meta.tracksTrusted)
+}
+
+function unverifiedList(tracks: unknown, trusted: unknown): string | null {
+  if (trusted !== true) return 'unverified_tracklist: the track list is not verified (tracksTrusted is not true); not rendering'
+  if (!Array.isArray(tracks) || tracks.length === 0) return 'unverified_tracklist: the track list is empty; not rendering'
+  return null
+}
+
 /** Errors that another attempt cannot fix: the recording is gone, private, unsupported, or not the full set. */
 const PERMANENT_RE = /incomplete_recording|unsupported url|not available|is private|private (?:track|video)|removed|does not exist|404|403|geo[- ]?restricted|no video formats|requested format is not available/i
 
@@ -131,6 +155,8 @@ export async function reportJobToTracked(ctx: AppContext, job: Job, client: Trac
       const r = await client.complete({
         id: meta.requestId, videoId: job.videoId, videoUrl: job.videoUrl,
         privacy: job.privacyApplied ?? job.privacy, jobId: job.id,
+        // The style the video was made with: tracked's "Recreate all old-style videos" goes by it.
+        style: job.uploadStyle ?? job.style,
       })
       log('info', 'tracked: delivered', { jobId: job.id, requestId: meta.requestId, videoId: job.videoId, result: r.status })
     } else {
@@ -171,6 +197,17 @@ export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: 
   if (!req) return { action: 'idle' }
   const account: UploadAccount = req.account === 'shared' ? 'shared' : 'primary'
   log('info', 'tracked: claimed', { requestId: req.id, slug: req.slug, setUrl: req.setUrl, source: req.source, attempt: req.attempts, account })
+
+  // The scene style renders verified lists only: refuse before downloading
+  // anything. Not permanent — tracked puts the request back to pending.
+  if (cfg.style === 'scene') {
+    const refusal = unverifiedList(req.tracks, req.tracksTrusted)
+    if (refusal) {
+      await client.fail({ id: req.id, error: refusal, permanent: false, jobId: null }).catch(() => {})
+      log('warn', 'tracked: refused unverified track list', { requestId: req.id, setUrl: req.setUrl, tracksTrusted: req.tracksTrusted ?? null, tracks: Array.isArray(req.tracks) ? req.tracks.length : null })
+      return { action: 'refused', requestId: req.id, reason: refusal }
+    }
+  }
 
   let url: string
   try {

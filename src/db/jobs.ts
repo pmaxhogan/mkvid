@@ -18,6 +18,8 @@ function row(r: any): Job {
     id: r.id, url: r.url, title: r.title, status: r.status, privacy: r.privacy,
     privacyApplied: (r.privacy_applied as Privacy | null) ?? null,
     style: r.style, videoId: r.video_id, videoUrl: r.video_url, error: r.error,
+    uploadStyle: (r.upload_style as WaveStyle | null) ?? null,
+    videoDeletedAt: r.video_deleted_at ?? null,
     meta: parseMeta(r.meta),
     createdAt: r.created_at, updatedAt: r.updated_at,
   }
@@ -48,9 +50,17 @@ export function makeJobsRepo(db: Database.Database) {
     setError(id: string, error: string) {
       db.prepare("UPDATE jobs SET status='failed', error=@e, updated_at=@t WHERE id=@id").run({ id, e: error, t: now() })
     },
-    setResult(id: string, videoId: string, videoUrl: string, privacyApplied: Privacy | null = null) {
-      db.prepare('UPDATE jobs SET video_id=@v, video_url=@u, privacy_applied=@p, updated_at=@t WHERE id=@id')
-        .run({ id, v: videoId, u: videoUrl, p: privacyApplied, t: now() })
+    /** Records the upload; `style` = the visual style the uploaded video was made with. */
+    setResult(id: string, videoId: string, videoUrl: string, privacyApplied: Privacy | null = null, style: WaveStyle | null = null) {
+      db.prepare('UPDATE jobs SET video_id=@v, video_url=@u, privacy_applied=@p, upload_style=COALESCE(@s, style), updated_at=@t WHERE id=@id')
+        .run({ id, v: videoId, u: videoUrl, p: privacyApplied, s: style, t: now() })
+    },
+    /** Every job that recorded this YouTube video as its upload (normally one), newest first. */
+    findByVideoId(videoId: string): Job[] {
+      return (db.prepare('SELECT * FROM jobs WHERE video_id=? ORDER BY created_at DESC').all(videoId) as any[]).map(row)
+    },
+    markVideoDeleted(id: string) {
+      db.prepare('UPDATE jobs SET video_deleted_at=@d, updated_at=@t WHERE id=@id').run({ id, d: now(), t: now() })
     },
     setTitle(id: string, title: string) {
       db.prepare('UPDATE jobs SET title=@ti, updated_at=@t WHERE id=@id').run({ id, ti: title, t: now() })
