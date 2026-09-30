@@ -36,7 +36,7 @@ function fakeClient(requests: TrackedRequest[] = []): TrackedClient & { calls: A
     async job(id, jobId) { calls.push(['job', { id, jobId }]) },
     async complete(input) { calls.push(['complete', input]); return { status: 'done' } },
     async fail(input) { calls.push(['fail', input]) },
-    async health() { return { ok: true } },
+    async health() { return { ok: true, verifiedLists: true } },
   }
 }
 
@@ -103,7 +103,10 @@ describe('makeTrackedClient', () => {
     expect((await client.claim(['primary', 'shared']))!.id).toBe(request.id)
     expect(seen[0]).toMatchObject({ url: 'https://tracked.example/mkvid/claim', init: { body: JSON.stringify({ accounts: ['primary', 'shared'] }) } })
     expect((seen[0]!.init.headers as Record<string, string>).authorization).toBe('Bearer mk')
-    await expect(client.complete({ id: request.id, videoId: 'v', videoUrl: 'u', privacy: 'unlisted', jobId: 'j' })).rejects.toBeInstanceOf(TrackedHttpError)
+    // The claim also names the style tracked jobs are rendered with (tracked gates recreations on it).
+    await client.claim(['primary'], 'scene')
+    expect(seen[1]!.init.body).toBe(JSON.stringify({ accounts: ['primary'], style: 'scene' }))
+    await expect(client.complete({ id: request.id, videoId: 'v', videoUrl: 'u', privacy: 'unlisted', jobId: 'j', style: 'static' })).rejects.toBeInstanceOf(TrackedHttpError)
   })
 })
 
@@ -186,6 +189,42 @@ describe('pollTracked', () => {
     expect(resolve).not.toHaveBeenCalled()
     expect(probe).not.toHaveBeenCalled()
     expect(ctx.jobs.list(10)).toEqual([])
+  })
+
+  it('with TRACKED_STYLE=scene, claims nothing from a tracked that does not advertise verified lists (staggered deploy)', async () => {
+    for (const health of [{ ok: true }, { ok: true, verifiedLists: false }]) {
+      const client = fakeClient([{ ...request, tracksTrusted: false, tracks: [] }])
+      client.health = async () => health
+      const ctx = buildContext({ ...cfg, tracked: { ...cfg.tracked!, style: 'scene' } }, { tracked: client })
+      connected(ctx)
+      expect(await pollTracked(ctx, client)).toEqual({ action: 'waiting_for_tracked' })
+      // Nothing claimed, so an old tracked never counts an attempt against the request.
+      expect(client.calls).toEqual([])
+    }
+    // The static style keeps working against an old tracked.
+    const client = fakeClient([request])
+    client.health = async () => ({ ok: true })
+    const ctx = buildContext(cfg, { tracked: client })
+    connected(ctx)
+    const r = await pollTracked(ctx, client, { probe: async () => 3700, resolve: async (u) => u })
+    expect(r).toMatchObject({ action: 'started' })
+    expect(client.calls[0]).toEqual(['claim', ['primary']])
+    await vi.waitFor(() => expect(ctx.queue.size).toBe(0), { timeout: 5000 })
+  })
+
+  it('a refusal tracked could not be told about is kept and retried on the next poll', async () => {
+    const client = fakeClient([{ ...request, tracksTrusted: false, tracks: [] }])
+    let down = true
+    const fail = client.fail.bind(client)
+    client.fail = async (input) => { if (down) throw new Error('fetch failed'); return fail(input) }
+    const ctx = buildContext({ ...cfg, tracked: { ...cfg.tracked!, style: 'scene' } }, { tracked: client })
+    connected(ctx)
+    expect(await pollTracked(ctx, client)).toMatchObject({ action: 'refused', requestId: request.id })
+    expect(ctx.db.prepare('SELECT request_id FROM tracked_refusals').all()).toEqual([{ request_id: request.id }])
+    down = false
+    expect(await pollTracked(ctx, client)).toEqual({ action: 'idle' })
+    expect(client.calls).toContainEqual(['fail', { id: request.id, error: expect.stringMatching(/^unverified_tracklist: /), permanent: false, jobId: null }])
+    expect(ctx.db.prepare('SELECT * FROM tracked_refusals').all()).toEqual([])
   })
 
   it('a tracked scene job with an unverified list fails at the start of the pipeline (e.g. queued before the rule), retryably', async () => {

@@ -63,7 +63,12 @@ row), so a claim carries `tracksTrusted: true` and a non-empty list. With
 any download: `POST /mkvid/fail { error: "unverified_tracklist: …", permanent:
 false }`, which tracked answers by putting the request back to pending without
 using an attempt. The pipeline repeats the check at the start of a tracked
-scene job (a job queued or resumed from before the rule). There is no
+scene job (a job queued or resumed from before the rule). A refusal tracked
+cannot be told about is kept (`tracked_refusals`) and retried every poll.
+Staggered deploys: with `TRACKED_STYLE=scene`, mkvid claims nothing until
+tracked's `GET /mkvid/health` answers `verifiedLists: true` — an older tracked
+would count every refusal as a used attempt and park the queue as failed.
+Every claim also names the style (`{ accounts, style }`). There is no
 names-hidden render any more: a video is made with the verified names, or not
 at all.
 
@@ -80,7 +85,7 @@ and marks the job (`video_deleted_at`). Answers `{ ok, outcome: "deleted" |
 "already_gone" }`; `404 unknown_video` / `409 not_tracked | request_mismatch`
 when it is not ours to delete (final); `502`/`503` otherwise (tracked retries).
 Every upload records its style in `jobs.upload_style` (uploads from before the
-column were backfilled as `static`).
+column were backfilled from `jobs.style`).
 
 ## Scene style
 

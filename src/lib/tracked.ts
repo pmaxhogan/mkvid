@@ -60,11 +60,13 @@ export interface TrackedRequest {
 }
 
 export interface TrackedClient {
-  claim(accounts: readonly UploadAccount[]): Promise<TrackedRequest | null>
+  /** `style` = the style tracked jobs are rendered with (TRACKED_STYLE); tracked refuses recreations unless it is scene. */
+  claim(accounts: readonly UploadAccount[], style?: string): Promise<TrackedRequest | null>
   job(id: string, jobId: string): Promise<void>
   complete(input: { id: string; videoId: string; videoUrl: string; privacy: string | null; jobId: string; style: string }): Promise<{ status: string }>
   fail(input: { id: string; error: string; permanent: boolean; jobId: string | null }): Promise<void>
-  health(): Promise<{ ok: boolean; counts?: Record<string, number> }>
+  /** `verifiedLists: true` = this tracked hands out verified lists only and treats `unverified_tracklist` as retryable. */
+  health(): Promise<{ ok: boolean; counts?: Record<string, number>; verifiedLists?: boolean }>
 }
 
 export class TrackedHttpError extends Error {
@@ -86,8 +88,8 @@ export function makeTrackedClient(cfg: NonNullable<Config['tracked']>, fetcher: 
     return (text ? JSON.parse(text) : {}) as T
   }
   return {
-    async claim(accounts) {
-      return (await call<{ request: TrackedRequest | null }>('POST', '/mkvid/claim', { accounts })).request
+    async claim(accounts, style) {
+      return (await call<{ request: TrackedRequest | null }>('POST', '/mkvid/claim', style ? { accounts, style } : { accounts })).request
     },
     async job(id, jobId) {
       await call('POST', '/mkvid/job', { id, jobId })
@@ -99,7 +101,7 @@ export function makeTrackedClient(cfg: NonNullable<Config['tracked']>, fetcher: 
       await call('POST', '/mkvid/fail', input)
     },
     async health() {
-      return call<{ ok: boolean; counts?: Record<string, number> }>('GET', '/mkvid/health')
+      return call<{ ok: boolean; counts?: Record<string, number>; verifiedLists?: boolean }>('GET', '/mkvid/health')
     },
   }
 }
@@ -183,16 +185,25 @@ export async function reportJobToTracked(ctx: AppContext, job: Job, client: Trac
  * render slot is free. Returns what it did (for tests / logs).
  */
 export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: { probe?: typeof probeDuration; resolve?: typeof resolveSourceUrl } = {}): Promise<
-  { action: 'idle' } | { action: 'busy' } | { action: 'not_connected' } | { action: 'started'; jobId: string; requestId: string } | { action: 'refused'; requestId: string; reason: string }
+  { action: 'idle' } | { action: 'busy' } | { action: 'not_connected' } | { action: 'waiting_for_tracked' } | { action: 'started'; jobId: string; requestId: string } | { action: 'refused'; requestId: string; reason: string }
 > {
   const cfg = ctx.config.tracked!
   for (const job of ctx.jobs.listUnreportedTracked()) await reportJobToTracked(ctx, job, client)
+  await retryRefusals(ctx, client)
 
   if (ctx.queue.size > 0) return { action: 'busy' }
+  // Staggered deploys: a tracked from before verified lists hands out
+  // unverified ones and counts every refusal as a used attempt (three and the
+  // request is parked as failed). So the scene style claims nothing until
+  // tracked says, on /mkvid/health, that it hands out verified lists only.
+  if (cfg.style === 'scene') {
+    const h = await client.health()
+    if (h.verifiedLists !== true) return { action: 'waiting_for_tracked' }
+  }
   const accounts = ctx.connectedAccounts()
   // Still poll with no accounts: tracked records the outcome so its panel can
   // say "reconnect YouTube on mkvid" instead of "mkvid is not polling".
-  const req = await client.claim(accounts)
+  const req = await client.claim(accounts, cfg.style)
   if (accounts.length === 0) return { action: 'not_connected' }
   if (!req) return { action: 'idle' }
   const account: UploadAccount = req.account === 'shared' ? 'shared' : 'primary'
@@ -203,7 +214,7 @@ export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: 
   if (cfg.style === 'scene') {
     const refusal = unverifiedList(req.tracks, req.tracksTrusted)
     if (refusal) {
-      await client.fail({ id: req.id, error: refusal, permanent: false, jobId: null }).catch(() => {})
+      await reportRefusal(ctx, client, req.id, refusal)
       log('warn', 'tracked: refused unverified track list', { requestId: req.id, setUrl: req.setUrl, tracksTrusted: req.tracksTrusted ?? null, tracks: Array.isArray(req.tracks) ? req.tracks.length : null })
       return { action: 'refused', requestId: req.id, reason: refusal }
     }
@@ -247,16 +258,52 @@ export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: 
   return { action: 'started', jobId: id, requestId: req.id }
 }
 
+/**
+ * Report an unverified-list refusal; if tracked cannot be reached, keep it in
+ * `tracked_refusals` and retry on every poll, so a network blip does not
+ * leave the request claimed until tracked's claim TTL (which uses an attempt).
+ */
+async function reportRefusal(ctx: AppContext, client: TrackedClient, requestId: string, error: string): Promise<boolean> {
+  try {
+    await client.fail({ id: requestId, error, permanent: false, jobId: null })
+    ctx.db.prepare('DELETE FROM tracked_refusals WHERE request_id = ?').run(requestId)
+    return true
+  } catch (e: any) {
+    // tracked no longer knows the request (retried, superseded): nothing to deliver.
+    if (e instanceof TrackedHttpError && (e.status === 404 || e.status === 409)) {
+      ctx.db.prepare('DELETE FROM tracked_refusals WHERE request_id = ?').run(requestId)
+      return true
+    }
+    ctx.db.prepare('INSERT INTO tracked_refusals (request_id, error, created_at) VALUES (?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET error = excluded.error')
+      .run(requestId, error, Date.now())
+    log('warn', 'tracked: refusal not delivered, will retry', { requestId, err: String(e?.message || e) })
+    return false
+  }
+}
+
+/** Retry refusals tracked has not acknowledged yet (oldest first). */
+export async function retryRefusals(ctx: AppContext, client: TrackedClient): Promise<number> {
+  const rows = ctx.db.prepare('SELECT request_id, error FROM tracked_refusals ORDER BY created_at ASC').all() as Array<{ request_id: string; error: string }>
+  let delivered = 0
+  for (const r of rows) if (await reportRefusal(ctx, client, r.request_id, r.error)) delivered++
+  return delivered
+}
+
 /** Start the interval poller. Returns a stop function. */
 export function startTrackedPoller(ctx: AppContext, client: TrackedClient): () => void {
   const cfg = ctx.config.tracked!
   let running = false
   let warnedNotConnected = false
+  let warnedWaiting = false
   const tick = async () => {
     if (running) return
     running = true
     try {
       const r = await pollTracked(ctx, client)
+      if (r.action === 'waiting_for_tracked') {
+        if (!warnedWaiting) log('warn', 'tracked: TRACKED_STYLE=scene but tracked does not advertise verified lists (/mkvid/health verifiedLists) — not claiming until it does')
+        warnedWaiting = true
+      } else warnedWaiting = false
       if (r.action === 'not_connected') {
         if (!warnedNotConnected) log('warn', 'tracked: YouTube not connected — not claiming work until it is')
         warnedNotConnected = true

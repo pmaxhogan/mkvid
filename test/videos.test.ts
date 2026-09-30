@@ -123,7 +123,7 @@ describe('POST /api/videos/:id/delete', () => {
 })
 
 describe('upload_style column', () => {
-  it('backfills existing uploads as static once, and records the style of new uploads', () => {
+  it('backfills existing uploads from the style they were rendered with, once, and records the style of new uploads', () => {
     const db = new Database(':memory:')
     // A database from before the column existed.
     db.exec(`CREATE TABLE jobs (id TEXT PRIMARY KEY, url TEXT NOT NULL, title TEXT, status TEXT NOT NULL, privacy TEXT NOT NULL, style TEXT NOT NULL,
@@ -132,7 +132,7 @@ describe('upload_style column', () => {
                                     ('none', 'u', 't', 'failed', 'unlisted', 'static', NULL, NULL, 'e', 1, 1)`)
     migrate(db)
     const jobs = makeJobsRepo(db)
-    expect(jobs.get('up')).toMatchObject({ uploadStyle: 'static', videoDeletedAt: null })
+    expect(jobs.get('up')).toMatchObject({ uploadStyle: 'waves', videoDeletedAt: null })
     expect(jobs.get('none')!.uploadStyle).toBeNull()
     // New uploads record their own style; a second migrate does not touch them.
     jobs.create({ id: 'new', url: 'u', title: 't', privacy: 'unlisted', style: 'scene' })
