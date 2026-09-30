@@ -10,6 +10,7 @@ import {
   isPermanentFailure,
   makeTrackedClient,
   pollTracked,
+  retryRefusals,
   reportJobToTracked,
   TrackedHttpError,
   type TrackedClient,
@@ -212,6 +213,15 @@ describe('pollTracked', () => {
     await vi.waitFor(() => expect(ctx.queue.size).toBe(0), { timeout: 5000 })
   })
 
+  it('with TRACKED_STYLE=scene, claims nothing when the health check throws (fails closed)', async () => {
+    const client = fakeClient([{ ...request, tracksTrusted: false, tracks: [] }])
+    client.health = async () => { throw new Error('fetch failed') }
+    const ctx = buildContext({ ...cfg, tracked: { ...cfg.tracked!, style: 'scene' } }, { tracked: client })
+    connected(ctx)
+    await expect(pollTracked(ctx, client)).rejects.toThrow('fetch failed')
+    expect(client.calls).toEqual([])
+  })
+
   it('a refusal tracked could not be told about is kept and retried on the next poll', async () => {
     const client = fakeClient([{ ...request, tracksTrusted: false, tracks: [] }])
     let down = true
@@ -225,6 +235,26 @@ describe('pollTracked', () => {
     expect(await pollTracked(ctx, client)).toEqual({ action: 'idle' })
     expect(client.calls).toContainEqual(['fail', { id: request.id, error: expect.stringMatching(/^unverified_tracklist: /), permanent: false, jobId: null }])
     expect(ctx.db.prepare('SELECT * FROM tracked_refusals').all()).toEqual([])
+  })
+
+  it('claiming a request again clears its saved refusal, so the stale one cannot reset it while it renders', async () => {
+    const verified = { ...request, tracksTrusted: true, tracks: [{ cueSeconds: 0, artist: 'A', title: 'B', artworkUrl: null, isId: false }] }
+    const client = fakeClient([{ ...request, tracksTrusted: false, tracks: [] }, verified])
+    let down = true
+    const fail = client.fail.bind(client)
+    client.fail = async (input) => { if (down) throw new Error('fetch failed'); return fail(input) }
+    const ctx = buildContext({ ...diskCfg, tracked: { ...diskCfg.tracked!, style: 'scene' } }, { tracked: client })
+    openContexts.push(ctx)
+    connected(ctx)
+    expect(await pollTracked(ctx, client)).toMatchObject({ action: 'refused', requestId: request.id })
+    expect(ctx.db.prepare('SELECT request_id FROM tracked_refusals').all()).toEqual([{ request_id: request.id }])
+    // Claimed again (tracked put it back to pending): the saved refusal goes.
+    expect(await pollTracked(ctx, client, { probe: async () => 3700, resolve: async (u) => u })).toMatchObject({ action: 'started', requestId: request.id })
+    expect(ctx.db.prepare('SELECT * FROM tracked_refusals').all()).toEqual([])
+    down = false
+    expect(await retryRefusals(ctx, client)).toBe(0)
+    expect(client.calls.filter(([name, input]) => name === 'fail' && (input as { jobId: unknown }).jobId === null)).toEqual([])
+    await vi.waitFor(() => expect(ctx.queue.size).toBe(0), { timeout: 5000 })
   })
 
   it('a tracked scene job with an unverified list fails at the start of the pipeline (e.g. queued before the rule), retryably', async () => {

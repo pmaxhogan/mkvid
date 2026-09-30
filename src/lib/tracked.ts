@@ -206,6 +206,8 @@ export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: 
   const req = await client.claim(accounts, cfg.style)
   if (accounts.length === 0) return { action: 'not_connected' }
   if (!req) return { action: 'idle' }
+  // Claimed again: a refusal saved for an earlier claim of this request is stale, and retrying it would reset a request that is now rendering.
+  ctx.db.prepare('DELETE FROM tracked_refusals WHERE request_id = ?').run(req.id)
   const account: UploadAccount = req.account === 'shared' ? 'shared' : 'primary'
   log('info', 'tracked: claimed', { requestId: req.id, slug: req.slug, setUrl: req.setUrl, source: req.source, attempt: req.attempts, account })
 
