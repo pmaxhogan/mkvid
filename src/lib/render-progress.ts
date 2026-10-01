@@ -39,7 +39,8 @@ export const STAGES_PLAIN: ReadonlyArray<Stage> = [
  * job's kept work. Everything before the last one belongs to an earlier
  * attempt (its "viz: assembling" or segment lines must not leak in).
  */
-const ATTEMPT_RE = /^(render failed: .*retrying|resuming after a restart|retry requested$|reusing the kept work)/
+// `render failed: ` alone: the message embeds a multi-line ffmpeg stderr tail, so `.*retrying` would miss it.
+const ATTEMPT_RE = /^(render failed: |resuming after a restart|retry requested$|reusing the kept work)/
 
 export interface StageView { key: StageKey; label: string; weight: number; state: 'done' | 'active' | 'pending'; progress: number | null }
 export interface RenderProgress {

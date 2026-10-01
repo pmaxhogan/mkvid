@@ -70,6 +70,8 @@ describe('describeProgress: attempts and old styles', () => {
       'render failed: viz: muxed audio is 10.00s, expected 12.00s; retrying in 30s from the finished segments (retry 1/2)',
       'resuming after a restart: audio set.m4a is already here',
       'retry requested',
+      // the ffmpeg stderr tail makes this one multi-line
+      'render failed: viz: ffmpeg exited 1 (segment 12): [h264_nvenc @ 0x5] OpenEncodeSessionEx failed\nError while opening encoder\nConversion failed!; retrying in 30s from the finished segments (retry 1/2)',
     ]) {
       const viz = [...failed, boundary, 'viz: analysing audio']
       const p = describeProgress(job(), { viz, download: null }, null)
