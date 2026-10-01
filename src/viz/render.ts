@@ -42,7 +42,7 @@ export type VizEncoder = 'nvenc' | 'x264'
 export const DEFAULT_SEGMENT_SECONDS = 60
 export const MANIFEST_VERSION = 1
 /** Share of the progress bar spent drawing; the rest is the assemble. */
-const RENDER_SHARE = 0.97
+export const RENDER_SHARE = 0.97
 
 export function defaultWorkerCount(): number {
   return Math.max(1, cpus().length - 2)

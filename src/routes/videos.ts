@@ -11,6 +11,9 @@
  *     → 404 { error: 'unknown_video' }     mkvid never recorded uploading this id
  *     → 409 { error: 'not_tracked' | 'request_mismatch' }
  *     → 401 unauthorized, 503 not configured / YouTube not connected, 502 YouTube error (tracked retries these)
+ *
+ *   GET /api/videos/render-progress
+ *     → 200 { running: RenderProgress | null }   the job being downloaded / rendered / uploaded now
  */
 
 import { Hono } from 'hono'
@@ -19,6 +22,7 @@ import { z } from 'zod'
 import type { AppContext } from '../context.js'
 import { deleteVideo, DeleteRefused, type VideosDeleteApi } from '../lib/youtube.js'
 import { log } from '../lib/log.js'
+import { describeProgress } from '../lib/render-progress.js'
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/
 const Body = z.object({ requestId: z.string().min(1).max(100) })
@@ -33,6 +37,14 @@ function bearerOk(header: string | undefined, token: string): boolean {
 
 export function videosRoutes(ctx: AppContext, opts: { api?: VideosDeleteApi; getToken?: Parameters<typeof deleteVideo>[1]['getToken'] } = {}): Hono {
   const app = new Hono()
+  app.get('/render-progress', (c) => {
+    const token = ctx.config.tracked?.token
+    if (!token) return c.json({ error: 'not_configured', message: 'TRACKED_URL / TRACKED_TOKEN are not set' }, 503)
+    if (!bearerOk(c.req.header('authorization'), token)) return c.json({ error: 'unauthorized' }, 401)
+    const job = ctx.jobs.running()
+    if (!job) return c.json({ running: null })
+    return c.json({ running: describeProgress(job, ctx.jobs.progressLogs(job.id), ctx.hub.progress(job.id)) })
+  })
   app.post('/:id/delete', async (c) => {
     const token = ctx.config.tracked?.token
     if (!token) return c.json({ error: 'not_configured', message: 'TRACKED_URL / TRACKED_TOKEN are not set' }, 503)

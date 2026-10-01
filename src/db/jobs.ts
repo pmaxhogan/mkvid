@@ -41,6 +41,17 @@ export function makeJobsRepo(db: Database.Database) {
       const r = db.prepare('SELECT * FROM jobs WHERE id=?').get(id)
       return r ? row(r) : null
     },
+    /** The job the queue is working on (downloading, rendering or uploading), if any. */
+    running(): Job | null {
+      const r = db.prepare("SELECT * FROM jobs WHERE status IN ('downloading','transcoding','uploading') ORDER BY updated_at DESC LIMIT 1").get()
+      return r ? row(r) : null
+    },
+    /** The render's own log lines (newest 400, oldest first) and the newest yt-dlp download line, for the progress view. */
+    progressLogs(id: string): { viz: string[]; download: string | null } {
+      const viz = (db.prepare("SELECT line FROM job_logs WHERE job_id=? AND line LIKE 'viz:%' ORDER BY id DESC LIMIT 400").all(id) as any[]).map((r) => r.line).reverse()
+      const d = db.prepare("SELECT line FROM job_logs WHERE job_id=? AND line LIKE '[download]%' ORDER BY id DESC LIMIT 1").get(id) as any
+      return { viz, download: d ? d.line : null }
+    },
     list(limit: number): Job[] {
       return (db.prepare('SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?').all(limit) as any[]).map(row)
     },
