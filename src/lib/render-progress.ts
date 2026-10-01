@@ -17,13 +17,29 @@ export type StageKey = 'download' | 'analyse' | 'render' | 'assemble' | 'upload'
  * segments ~2/3 of the job, then assembling + the YouTube upload ~0.3-0.5x the
  * segment time. Widths on the bar, not a promise.
  */
-export const STAGES: ReadonlyArray<{ key: StageKey; label: string; weight: number }> = [
+export type Stage = { key: StageKey; label: string; weight: number }
+export const STAGES: ReadonlyArray<Stage> = [
   { key: 'download', label: 'Download', weight: 2 },
   { key: 'analyse', label: 'Analyse', weight: 2 },
   { key: 'render', label: 'Render', weight: 64 },
   { key: 'assemble', label: 'Assemble', weight: 3 },
   { key: 'upload', label: 'Upload', weight: 29 },
 ]
+
+/** The old styles (static, waveform): one ffmpeg pass, no analysis or assembly; much shorter than a scene render. */
+export const STAGES_PLAIN: ReadonlyArray<Stage> = [
+  { key: 'download', label: 'Download', weight: 5 },
+  { key: 'render', label: 'Transcode', weight: 60 },
+  { key: 'upload', label: 'Upload', weight: 35 },
+]
+
+/**
+ * Lines that start a new attempt in the same job's log: an in-process render
+ * retry, a resume after a restart, a retry from the UI, adopting a failed
+ * job's kept work. Everything before the last one belongs to an earlier
+ * attempt (its "viz: assembling" or segment lines must not leak in).
+ */
+const ATTEMPT_RE = /^(render failed: .*retrying|resuming after a restart|retry requested$|reusing the kept work)/
 
 export interface StageView { key: StageKey; label: string; weight: number; state: 'done' | 'active' | 'pending'; progress: number | null }
 export interface RenderProgress {
@@ -56,7 +72,11 @@ const lastMatch = (lines: string[], re: RegExp): RegExpExecArray | null => {
 }
 
 export function describeProgress(job: Job, logs: { viz: string[]; download: string | null }, live: LiveProgress | null): RenderProgress {
-  const viz = logs.viz
+  let cut = -1
+  logs.viz.forEach((l, i) => { if (ATTEMPT_RE.test(l)) cut = i })
+  const viz = logs.viz.slice(cut + 1).filter((l) => l.startsWith('viz:'))
+  const plain = job.style !== 'scene'
+  const table = plain ? STAGES_PLAIN : STAGES
   const segStart = lastMatch(viz, SEGS_START_RE)
   const lastSeg = lastMatch(viz, SEG_RE)
   let segments: RenderProgress['segments'] = segStart ? { done: Number(segStart[2]), total: Number(segStart[1]) } : null
@@ -80,6 +100,9 @@ export function describeProgress(job: Job, logs: { viz: string[]; download: stri
       const m = DL_RE.exec(logs.download)
       progress = m ? clamp(Number(m[1]) / 100) : null
     }
+  } else if (plain) {
+    stage = 'render'
+    progress = live?.phase === 'transcode' ? clamp(live.percent / 100) : null
   } else if (viz.some((l) => l === 'viz: assembling' || l.startsWith('viz: out.mp4 from an earlier attempt'))) {
     stage = 'assemble'
   } else if (segStart) {
@@ -90,13 +113,13 @@ export function describeProgress(job: Job, logs: { viz: string[]; download: stri
     stage = 'analyse'
   }
 
-  const idx = STAGES.findIndex((s) => s.key === stage)
-  const stages: StageView[] = STAGES.map((s, i) => ({
+  const idx = table.findIndex((s) => s.key === stage)
+  const stages: StageView[] = table.map((s, i) => ({
     ...s,
     state: i < idx ? 'done' : i === idx ? 'active' : 'pending',
     progress: i < idx ? 1 : i === idx ? progress : 0,
   }))
-  const total = STAGES.reduce((n, s) => n + s.weight, 0)
+  const total = table.reduce((n, s) => n + s.weight, 0)
   const fraction = stages.reduce((n, s) => n + s.weight * (s.progress ?? 0), 0) / total
   return {
     jobId: job.id,

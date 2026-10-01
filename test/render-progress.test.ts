@@ -63,6 +63,38 @@ describe('describeProgress', () => {
   })
 })
 
+describe('describeProgress: attempts and old styles', () => {
+  it('ignores lines from an earlier attempt (in-process retry, restart resume, UI retry)', () => {
+    const failed = ['viz: 90 segment(s), 0 already done; nvenc', 'viz: segment 90/90 done (80.0 fps, ~0 min left)', 'viz: assembling']
+    for (const boundary of [
+      'render failed: viz: muxed audio is 10.00s, expected 12.00s; retrying in 30s from the finished segments (retry 1/2)',
+      'resuming after a restart: audio set.m4a is already here',
+      'retry requested',
+    ]) {
+      const viz = [...failed, boundary, 'viz: analysing audio']
+      const p = describeProgress(job(), { viz, download: null }, null)
+      expect(p.stage, boundary).toBe('analyse')
+      expect(p.segments).toBeNull()
+      const again = describeProgress(job(), { viz: [...viz, 'viz: 90 segment(s), 88 already done; nvenc', 'viz: segment 89/90 done (80.0 fps, ~1 min left)'], download: null }, null)
+      expect(again.stage).toBe('render')
+      expect(again.segments).toEqual({ done: 89, total: 90 })
+    }
+  })
+
+  it('an old-style job: download, transcode with the live percent, upload', () => {
+    const plain = job({ style: 'static' as Job['style'] })
+    const p = describeProgress(plain, { viz: [], download: null }, { phase: 'transcode', percent: 40, at: 1 })
+    expect(p.stages.map((s) => s.label)).toEqual(['Download', 'Transcode', 'Upload'])
+    expect(p.stage).toBe('render')
+    expect(p.stages[1]).toMatchObject({ state: 'active', progress: 0.4 })
+    expect(p.fraction).toBeCloseTo((5 + 60 * 0.4) / 100)
+    expect(describeProgress(plain, { viz: [], download: null }, null).stages[1]!.progress).toBeNull()
+    const up = describeProgress(job({ style: 'static' as Job['style'], status: 'uploading' }), { viz: [], download: null }, { phase: 'upload', percent: 50, at: 1 })
+    expect(up.stage).toBe('upload')
+    expect(up.fraction).toBeCloseTo((5 + 60 + 17.5) / 100)
+  })
+})
+
 describe('GET /api/videos/render-progress', () => {
   const app = (ctx: ReturnType<typeof buildContext>) => {
     const a = new Hono()
@@ -87,7 +119,11 @@ describe('GET /api/videos/render-progress', () => {
     const body = (await (await get(app(ctx))).json()) as any
     expect(body.running).toMatchObject({ jobId: 'j1', requestId: REQ, stage: 'render', segments: { done: 1, total: 4 }, renderMinutesLeft: 3 })
     expect(body.running.stages[2].progress).toBeCloseTo(0.5)
+    // a restart resume after the last segment line: the old lines no longer count
+    ctx.jobs.appendLog('j1', 'resuming after a restart: audio a.m4a is already here')
+    ctx.jobs.appendLog('j1', 'viz: analysing audio')
     ctx.hub.publish('j1', { type: 'done', videoUrl: 'x' })
+    expect(((await (await get(app(ctx))).json()) as any).running).toMatchObject({ stage: 'analyse', segments: null })
     expect(ctx.hub.progress('j1')).toBeNull()
   })
 })
