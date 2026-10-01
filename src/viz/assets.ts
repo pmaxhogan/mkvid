@@ -32,15 +32,29 @@ function text(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim() : null
 }
 
+/** Options for {@link vizTracksFromTracked}. */
+export interface VizTracksOptions {
+  /** Length of the audio in seconds: lets untimed rows after the last cue be spread up to the end. */
+  durationSeconds?: number
+}
+
 /**
  * tracked's track list -> what the video may show. List order is kept.
- *   - a non-layered track without a cue time is dropped, except the first
- *     entry of the list, which starts at 0;
- *   - a non-layered track whose cue is earlier than the previous kept
- *     non-layered track's is bad data and dropped (never reordered);
+ *   - the first entry of the list starts at 0 when it has no cue time;
+ *   - a non-layered track whose cue is earlier than the previous kept cued
+ *     non-layered track's is bad data and dropped (never reordered), and so
+ *     is one whose cue is present but unusable (negative, not finite);
+ *   - a run of k consecutive non-layered tracks without a cue between two
+ *     kept cued ones (anchors at a and b) is spread evenly between them:
+ *     the j-th starts at a + (b - a) * j / (k + 1). Bad-data rows inside the
+ *     run stay dropped and are not counted. A run after the last anchor is
+ *     spread the same way up to `durationSeconds` (as b) when that is given
+ *     and later than the anchor, and dropped otherwise. A run with no anchor
+ *     before it (only possible when the first entry is junk) is dropped;
  *   - a layered track (a "w/" row) belongs to its base, the nearest preceding
  *     non-layered entry: dropped when that base was dropped; without a cue it
- *     starts with its base, and a cue earlier than the base is clamped to it;
+ *     starts with its base (cued or spread), and a cue earlier than the base
+ *     is clamped to it;
  *   - a layered track that would start at or after the next kept base could
  *     never be on screen (it leaves with its base) and is dropped, which also
  *     keeps the list sorted by start as VizTrack requires;
@@ -54,39 +68,70 @@ function text(v: unknown): string | null {
  * names-hidden render of an untrusted list any more: wrong names burned into
  * a video cannot be corrected later, and a video without them is not made.
  */
-export function vizTracksFromTracked(tracks: readonly TrackedTrack[] | null | undefined): PlannedTrack[] {
+export function vizTracksFromTracked(
+  tracks: readonly TrackedTrack[] | null | undefined,
+  opts: VizTracksOptions = {},
+): PlannedTrack[] {
   if (!Array.isArray(tracks)) return []
-  const out: PlannedTrack[] = []
-  /** The current base: none yet, kept (at out[index]), or dropped. */
-  let base: { kept: true; start: number } | { kept: false } | null = null
+  /** One usable entry; `start` of a base is null while unknown (untimed) or when dropped. */
+  interface Row { t: TrackedTrack; cue: number | null; base: number | null; start: number | null; bad?: true }
+  const rows: Row[] = []
+  /** Index (in rows) of the current base, or null before the first non-layered entry. */
+  let base: number | null = null
+  let prevAnchor: number | null = null
   tracks.forEach((t, i) => {
     if (!t || typeof t !== 'object') return
     const cue = typeof t.cueSeconds === 'number' && Number.isFinite(t.cueSeconds) && t.cueSeconds >= 0 ? t.cueSeconds : null
-    const named = t.isId !== true
-    const url = text(t.artworkUrl)
-    const planned = (startSeconds: number, layered: boolean): PlannedTrack => ({
-      startSeconds,
-      artist: named ? text(t.artist) : null,
-      title: named ? text(t.title) : null,
-      artworkUrl: url && /^https?:\/\//i.test(url) ? url : null,
-      ...(layered ? { layered: true as const } : {}),
-    })
     if (t.layered === true && base !== null) {
-      if (!base.kept) return
-      out.push(planned(cue === null ? base.start : Math.max(cue, base.start), true))
+      rows.push({ t, cue, base, start: null })
       return
     }
     // A base track (or a layered entry with nothing before it to layer on).
     let start = cue
     if (start === null && i === 0) start = 0
-    const prev = base?.kept ? base.start : null
-    if (start === null || (prev !== null && start < prev)) {
-      base = { kept: false }
+    base = rows.length
+    // A cue that is present but not a usable time (negative, NaN) is bad data, not "untimed".
+    const malformed = start === null && t.cueSeconds !== null && t.cueSeconds !== undefined
+    if (malformed || (start !== null && prevAnchor !== null && start < prevAnchor)) {
+      rows.push({ t, cue, base: null, start: null, bad: true })
       return
     }
-    base = { kept: true, start }
-    out.push(planned(start, false))
+    if (start !== null) prevAnchor = start
+    rows.push({ t, cue, base: null, start })
   })
+  // Spread each run of untimed bases evenly between its anchors (or the anchor and the end).
+  let anchor: number | null = null
+  let run: Row[] = []
+  const spread = (a: number, b: number) => run.forEach((r, j) => { r.start = a + ((b - a) * (j + 1)) / (run.length + 1) })
+  for (const r of rows) {
+    if (r.base !== null || r.bad) continue
+    if (r.start === null) { if (anchor !== null) run.push(r); continue }
+    if (anchor !== null) spread(anchor, r.start)
+    anchor = r.start
+    run = []
+  }
+  const end = opts.durationSeconds
+  if (anchor !== null && run.length && typeof end === 'number' && Number.isFinite(end) && end > anchor) spread(anchor, end)
+
+  const out: PlannedTrack[] = []
+  for (const r of rows) {
+    const named = r.t.isId !== true
+    const url = text(r.t.artworkUrl)
+    const planned = (startSeconds: number, layered: boolean): PlannedTrack => ({
+      startSeconds,
+      artist: named ? text(r.t.artist) : null,
+      title: named ? text(r.t.title) : null,
+      artworkUrl: url && /^https?:\/\//i.test(url) ? url : null,
+      ...(layered ? { layered: true as const } : {}),
+    })
+    if (r.base !== null) {
+      const baseStart = rows[r.base].start
+      if (baseStart === null) continue
+      out.push(planned(r.cue === null ? baseStart : Math.max(r.cue, baseStart), true))
+    } else if (r.start !== null) {
+      out.push(planned(r.start, false))
+    }
+  }
   // Layered tracks that start at/after the next base's start would never be shown.
   let nextBase = Number.POSITIVE_INFINITY
   for (let k = out.length - 1; k >= 0; k--) {

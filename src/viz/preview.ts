@@ -42,7 +42,7 @@ class UsageError extends Error {}
 
 function fail(msg: string): never { throw new UsageError(msg) }
 
-async function loadTracks(file: string, cacheDir: string, untrusted: boolean): Promise<VizTrack[]> {
+async function loadTracks(file: string, cacheDir: string, untrusted: boolean, durationSeconds: number): Promise<VizTrack[]> {
   let raw: unknown
   try { raw = JSON.parse(readFileSync(file, 'utf8')) } catch (e: any) { fail(`--tracks ${file}: ${e?.message || e}`) }
   const list = (Array.isArray(raw) ? raw : (raw as any)?.tracks) as TrackedTrack[] | undefined
@@ -62,7 +62,7 @@ async function loadTracks(file: string, cacheDir: string, untrusted: boolean): P
     return { ...t, artworkUrl: LOCAL + (locals.length - 1) }
   })
   const out: VizTrack[] = []
-  for (const t of vizTracksFromTracked(wire)) {
+  for (const t of vizTracksFromTracked(wire, { durationSeconds })) {
     let artworkPath: string | null = null
     if (t.artworkUrl?.startsWith(LOCAL)) {
       const p = locals[Number(t.artworkUrl.slice(LOCAL.length))]
@@ -161,7 +161,7 @@ async function main(): Promise<void> {
 
     // 2. scene input
     const cacheDir = join(tmpdir(), 'mkvid-artwork-cache')
-    const tracks = a.tracks ? await loadTracks(resolve(a.tracks), cacheDir, a.untrusted === true) : []
+    const tracks = a.tracks ? await loadTracks(resolve(a.tracks), cacheDir, a.untrusted === true, duration) : []
     const input: VizInput = {
       audioPath, durationSeconds: duration,
       setTitle: a.title ?? basename(audioPath, extname(audioPath)), setArtist: a.artist ?? null,

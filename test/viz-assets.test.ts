@@ -17,11 +17,12 @@ const t = (cueSeconds: number | null, artist: string | null, title: string | nul
   ({ cueSeconds, artist, title, artworkUrl: null, isId: false, ...extra })
 
 describe('vizTracksFromTracked', () => {
-  it('drops tracks without a cue, except the first, which starts at 0', () => {
-    const out = vizTracksFromTracked([t(null, 'A', 'Intro'), t(120, 'B', 'Two'), t(null, 'C', 'Lost'), t(300, 'D', 'Four')])
+  it('the first track without a cue starts at 0; an untimed track between two cued ones is spread between them', () => {
+    const out = vizTracksFromTracked([t(null, 'A', 'Intro'), t(120, 'B', 'Two'), t(null, 'C', 'Middle'), t(300, 'D', 'Four')])
     expect(out).toEqual([
       { startSeconds: 0, artist: 'A', title: 'Intro', artworkUrl: null },
       { startSeconds: 120, artist: 'B', title: 'Two', artworkUrl: null },
+      { startSeconds: 210, artist: 'C', title: 'Middle', artworkUrl: null },
       { startSeconds: 300, artist: 'D', title: 'Four', artworkUrl: null },
     ])
   })
@@ -59,6 +60,68 @@ describe('vizTracksFromTracked', () => {
   })
 })
 
+describe('vizTracksFromTracked: untimed rows are spread between cues', () => {
+  const L = (cue: number | null, artist: string) => t(cue, artist, 'w/', { layered: true })
+  const brief = (out: ReturnType<typeof vizTracksFromTracked>) => out.map((x) => [x.startSeconds, x.artist, x.layered === true])
+
+  it('a run of untimed rows between two anchors is spread evenly', () => {
+    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(null, 'B', 'b'), t(null, 'C', 'c'), t(null, 'D', 'd'), t(400, 'E', 'e')])))
+      .toEqual([[0, 'A', false], [100, 'B', false], [200, 'C', false], [300, 'D', false], [400, 'E', false]])
+  })
+  it('each run uses its own neighbouring anchors', () => {
+    expect(brief(vizTracksFromTracked([
+      t(0, 'A', 'a'), t(null, 'B', 'b'), t(100, 'C', 'c'), t(null, 'D', 'd'), t(null, 'E', 'e'), t(400, 'F', 'f'), t(null, 'G', 'g'), t(500, 'H', 'h'),
+    ]))).toEqual([
+      [0, 'A', false], [50, 'B', false], [100, 'C', false], [200, 'D', false], [300, 'E', false], [400, 'F', false], [450, 'G', false], [500, 'H', false],
+    ])
+  })
+  it('untimed rows after the last anchor are dropped without a duration', () => {
+    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(100, 'B', 'b'), t(null, 'C', 'c'), t(null, 'D', 'd')])))
+      .toEqual([[0, 'A', false], [100, 'B', false]])
+  })
+  it('untimed rows after the last anchor are spread up to the end when the duration is given', () => {
+    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(100, 'B', 'b'), t(null, 'C', 'c'), t(null, 'D', 'd')], { durationSeconds: 400 })))
+      .toEqual([[0, 'A', false], [100, 'B', false], [200, 'C', false], [300, 'D', false]])
+  })
+  it('a duration not later than the last anchor (or not finite) leaves the trailing rows dropped', () => {
+    const list = [t(0, 'A', 'a'), t(100, 'B', 'b'), t(null, 'C', 'c')]
+    for (const durationSeconds of [100, 50, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(brief(vizTracksFromTracked(list, { durationSeconds }))).toEqual([[0, 'A', false], [100, 'B', false]])
+    }
+  })
+  it('the duration does not move rows that already lie between anchors', () => {
+    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(null, 'B', 'b'), t(100, 'C', 'c')], { durationSeconds: 1000 })))
+      .toEqual([[0, 'A', false], [50, 'B', false], [100, 'C', false]])
+  })
+  it('a bad-cue row inside a run stays dropped (with its layered rows) and is not counted', () => {
+    expect(brief(vizTracksFromTracked([
+      t(0, 'A', 'a'), t(300, 'B', 'b'), t(null, 'C', 'c'), t(100, 'bad', 'x'), L(null, 'bad-w'), t(null, 'D', 'd'), t(600, 'E', 'e'),
+    ]))).toEqual([[0, 'A', false], [300, 'B', false], [400, 'C', false], [500, 'D', false], [600, 'E', false]])
+  })
+  it('a layered row on a spread base starts with it, is clamped to it, or is dropped at/after the next base', () => {
+    expect(brief(vizTracksFromTracked([
+      t(0, 'A', 'a'), t(null, 'B', 'b'), L(null, 'B2'), L(10, 'B3'), t(null, 'C', 'c'), L(300, 'C-late'), t(300, 'D', 'd'),
+    ]))).toEqual([[0, 'A', false], [100, 'B', false], [100, 'B2', true], [100, 'B3', true], [200, 'C', false], [300, 'D', false]])
+    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(null, 'B', 'b'), L(200, 'B2'), t(300, 'C', 'c')])))
+      .toEqual([[0, 'A', false], [150, 'B', false], [200, 'B2', true], [300, 'C', false]])
+  })
+  it('equal anchors give equal starts', () => {
+    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(100, 'B', 'b'), t(null, 'C', 'c'), t(100, 'D', 'd')])))
+      .toEqual([[0, 'A', false], [100, 'B', false], [100, 'C', false], [100, 'D', false]])
+  })
+  it('untimed rows with no anchor before them (junk first entry) are dropped', () => {
+    expect(brief(vizTracksFromTracked([null as any, t(null, 'B', 'b'), t(100, 'C', 'c')]))).toEqual([[100, 'C', false]])
+  })
+  it('real-world shape: 33 rows with only the first (0) and last (6410) cued are all shown, evenly spaced', () => {
+    const list = Array.from({ length: 33 }, (_, i) => t(i === 0 ? 0 : i === 32 ? 6410 : null, 'A' + i, 'T' + i))
+    const out = vizTracksFromTracked(list, { durationSeconds: 6600 })
+    expect(out).toHaveLength(33)
+    expect(out.map((x) => x.artist)).toEqual(list.map((x) => x.artist))
+    out.forEach((x, i) => expect(x.startSeconds).toBeCloseTo((6410 * i) / 32, 9))
+    for (let i = 1; i < out.length; i++) expect(out[i].startSeconds).toBeGreaterThan(out[i - 1].startSeconds)
+  })
+})
+
 describe('vizTracksFromTracked: layered tracks', () => {
   const L = (cue: number | null, artist: string, extra: Partial<TrackedTrack> = {}) => t(cue, artist, 'w/', { layered: true, ...extra })
   const brief = (out: ReturnType<typeof vizTracksFromTracked>) => out.map((x) => [x.startSeconds, x.artist, x.layered === true])
@@ -79,8 +142,8 @@ describe('vizTracksFromTracked: layered tracks', () => {
     expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(200, 'B', 'b'), L(150, 'B2')])))
       .toEqual([[0, 'A', false], [200, 'B', false], [200, 'B2', true]])
   })
-  it('a layered entry whose base was dropped (no cue, or cued out of order) is dropped', () => {
-    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(null, 'gone', 'x'), L(90, 'orphan1'), L(null, 'orphan2'), t(300, 'B', 'b')])))
+  it('a layered entry whose base was dropped (untimed after the last cue, or cued out of order) is dropped', () => {
+    expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(300, 'B', 'b'), t(null, 'gone', 'x'), L(90, 'orphan1'), L(null, 'orphan2')])))
       .toEqual([[0, 'A', false], [300, 'B', false]])
     expect(brief(vizTracksFromTracked([t(0, 'A', 'a'), t(300, 'B', 'b'), t(100, 'bad', 'x'), L(310, 'orphan'), t(400, 'C', 'c')])))
       .toEqual([[0, 'A', false], [300, 'B', false], [400, 'C', false]])

@@ -225,7 +225,7 @@ async function renderSceneForJob(
     const setArtworkPath = job.url.startsWith(UPLOAD_PREFIX)
       ? null
       : await downloadSetArtwork({ ytdlpPath: config.ytdlpPath, ffmpegPath: config.ffmpegPath, url: job.url, outDir: vizDir }, logLine)
-    const planned = vizTracksFromTracked(job.meta?.tracks)
+    const planned = vizTracksFromTracked(job.meta?.tracks, { durationSeconds: a.duration })
     const tracks = await resolveVizTracks(planned, config.viz.artworkCacheDir, { onLog: logLine })
     const withArt = tracks.filter((t) => t.artworkPath).length
     const named = tracks.filter((t) => t.artist || t.title).length
