@@ -228,6 +228,7 @@ export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: 
   } catch (e: any) {
     const error = `source: ${String(e?.message || e)}`
     await client.fail({ id: req.id, error, permanent: isPermanentFailure(error), jobId: null }).catch(() => {})
+    log('warn', 'tracked: refused, source lookup failed', { requestId: req.id, setUrl: req.setUrl, permanent: isPermanentFailure(error), error: error.slice(0, 300) })
     return { action: 'refused', requestId: req.id, reason: error }
   }
 
@@ -237,6 +238,7 @@ export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: 
   } catch (e: any) {
     const error = `probe: ${String(e?.message || e)}`
     await client.fail({ id: req.id, error, permanent: isPermanentFailure(error), jobId: null }).catch(() => {})
+    log('warn', 'tracked: refused, probe failed', { requestId: req.id, setUrl: req.setUrl, permanent: isPermanentFailure(error), error: error.slice(0, 300) })
     return { action: 'refused', requestId: req.id, reason: error }
   }
   if (isIncompleteRecording(duration, req.lastCueSeconds)) {
