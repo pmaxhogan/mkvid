@@ -13,14 +13,18 @@
  *      row as `meta.reported`, so a report that failed — or a restart between
  *      upload and report — is retried instead of the set being rendered twice
  *      once tracked's claim expires);
- *   2. if the render slot is free, claim one request, telling tracked which
+ *   2. renew tracked's claim on every set queued or running here (`/mkvid/job`
+ *      again): with two jobs in flight a set can wait for the render slot,
+ *      and a claim older than tracked's claim TTL is handed out again;
+ *   3. if a job slot is free (two run at once, in different stages — see
+ *      stage-gate.ts), claim one request, telling tracked which
  *      upload accounts (Google projects) currently have a connected YouTube
  *      token — it fills its own project's quota day first, then the sync's —
  *      and gets back the request stamped with the account to upload through;
- *   3. resolve the source (hearthis embed → track page), probe its duration
+ *   4. resolve the source (hearthis embed → track page), probe its duration
  *      and refuse a recording shorter than the tracklist's last cue
  *      (`incomplete_recording`, permanent — a clip is not the set);
- *   4. create the job (style `TRACKED_STYLE`, default static; the track list
+ *   5. create the job (style `TRACKED_STYLE`, default static; the track list
  *      rides along in the job meta for the scene style) and hand it to the
  *      normal pipeline. The scene style refuses, before any download, a
  *      request whose list is not verified (`tracksTrusted` not exactly true)
@@ -181,17 +185,23 @@ export async function reportJobToTracked(ctx: AppContext, job: Job, client: Trac
 }
 
 /**
- * One poll: retry undelivered outcomes, then claim + start one request if the
- * render slot is free. Returns what it did (for tests / logs).
+ * One poll: retry undelivered outcomes, renew the claims of the sets in
+ * flight, then claim + start one request if a job slot is free. Returns what
+ * it did (for tests / logs).
  */
 export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: { probe?: typeof probeDuration; resolve?: typeof resolveSourceUrl } = {}): Promise<
-  { action: 'idle' } | { action: 'busy' } | { action: 'not_connected' } | { action: 'waiting_for_tracked' } | { action: 'started'; jobId: string; requestId: string } | { action: 'refused'; requestId: string; reason: string }
+  { action: 'idle' } | { action: 'busy' } | { action: 'already_running'; jobId: string; requestId: string } | { action: 'not_connected' } | { action: 'waiting_for_tracked' } | { action: 'started'; jobId: string; requestId: string } | { action: 'refused'; requestId: string; reason: string }
 > {
   const cfg = ctx.config.tracked!
   for (const job of ctx.jobs.listUnreportedTracked()) await reportJobToTracked(ctx, job, client)
   await retryRefusals(ctx, client)
+  const inFlight = ctx.jobs.inFlightTracked()
+  for (const job of inFlight) {
+    await client.job(job.meta!.requestId, job.id)
+      .catch((e: any) => log('warn', 'tracked: could not renew the claim', { jobId: job.id, requestId: job.meta!.requestId, err: String(e?.message || e) }))
+  }
 
-  if (ctx.queue.size > 0) return { action: 'busy' }
+  if (!ctx.queue.hasFreeSlot) return { action: 'busy' }
   // Staggered deploys: a tracked from before verified lists hands out
   // unverified ones and counts every refusal as a used attempt (three and the
   // request is parked as failed). So the scene style claims nothing until
@@ -206,6 +216,14 @@ export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: 
   const req = await client.claim(accounts, cfg.style)
   if (accounts.length === 0) return { action: 'not_connected' }
   if (!req) return { action: 'idle' }
+  // Handed out again while a job here still has it (its claim lapsed before
+  // a renewal landed): keep that job, point tracked back at it, start nothing.
+  const twin = inFlight.find((j) => j.meta!.requestId === req.id)
+  if (twin) {
+    await client.job(req.id, twin.id).catch(() => {})
+    log('warn', 'tracked: claimed a set already in flight here, kept the running job', { requestId: req.id, jobId: twin.id })
+    return { action: 'already_running', jobId: twin.id, requestId: req.id }
+  }
   // Claimed again: a refusal saved for an earlier claim of this request is stale, and retrying it would reset a request that is now rendering.
   ctx.db.prepare('DELETE FROM tracked_refusals WHERE request_id = ?').run(req.id)
   const account: UploadAccount = req.account === 'shared' ? 'shared' : 'primary'

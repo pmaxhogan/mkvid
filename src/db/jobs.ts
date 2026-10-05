@@ -41,10 +41,9 @@ export function makeJobsRepo(db: Database.Database) {
       const r = db.prepare('SELECT * FROM jobs WHERE id=?').get(id)
       return r ? row(r) : null
     },
-    /** The job the queue is working on (downloading, rendering or uploading), if any. */
-    running(): Job | null {
-      const r = db.prepare("SELECT * FROM jobs WHERE status IN ('downloading','transcoding','uploading') ORDER BY updated_at DESC LIMIT 1").get()
-      return r ? row(r) : null
+    /** Every job the queue is working on (downloading, rendering or uploading), oldest first. */
+    runningAll(): Job[] {
+      return (db.prepare("SELECT * FROM jobs WHERE status IN ('downloading','transcoding','uploading') ORDER BY created_at ASC").all() as any[]).map(row)
     },
     /**
      * For the progress view: the render's own log lines plus the lines that
@@ -90,6 +89,13 @@ export function makeJobsRepo(db: Database.Database) {
      * outcome has not been delivered yet — what the poller reports on every
      * tick until the Worker has acknowledged each one.
      */
+    /** tracked jobs queued or running here, oldest first. */
+    inFlightTracked(): Job[] {
+      const ph = RUNNING.map(() => '?').join(',')
+      return (db.prepare(`SELECT * FROM jobs WHERE meta IS NOT NULL AND status IN (${ph}) ORDER BY created_at ASC`).all(...RUNNING) as any[])
+        .map(row)
+        .filter((j) => j.meta?.origin === 'tracked')
+    },
     listUnreportedTracked(): Job[] {
       const finals: JobStatus[] = ['done', 'failed', 'interrupted']
       const ph = finals.map(() => '?').join(',')

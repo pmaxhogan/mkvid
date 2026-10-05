@@ -14,6 +14,7 @@ import { uploadVideo, addToPlaylist } from './youtube.js'
 import { sendPush } from './push.js'
 import { UPLOAD_PREFIX, sanitizeUploadName } from './upload.js'
 import { log } from './log.js'
+import type { GateStage } from './stage-gate.js'
 
 /** Video description: where the audio came from, and for tracked jobs the set page it belongs to. */
 export function describeJob(job: Pick<Job, 'url' | 'meta'>): string {
@@ -210,17 +211,20 @@ export function adoptKeptWork(ctx: AppContext, job: Job, workDir: string, logLin
   return false
 }
 
+/** Runs `fn` holding one stage of the job (ctx.gate), so two jobs never run the same stage at once. */
+type Gated = <T>(stage: GateStage, fn: () => Promise<T>) => Promise<T>
+
 async function renderSceneForJob(
   ctx: AppContext, job: Job,
   a: { workDir: string; audioPath: string; duration: number; codec: string; title: string; outFile: string },
-  onProgress: (percent: number) => void, logLine: (line: string) => void,
+  onProgress: (percent: number) => void, logLine: (line: string) => void, gated: Gated,
 ): Promise<void> {
   const { config } = ctx
   const vizDir = join(a.workDir, VIZ_DIR)
   mkdirSync(vizDir, { recursive: true })
   let input = loadVizInput(vizDir, a.audioPath)
   if (input) logLine('viz: resuming with the saved track list and artwork')
-  else {
+  else input = await gated('analyse', async () => {
     const [width, height] = config.viz.size.split('x').map(Number)
     const setArtworkPath = job.url.startsWith(UPLOAD_PREFIX)
       ? null
@@ -230,12 +234,13 @@ async function renderSceneForJob(
     const withArt = tracks.filter((t) => t.artworkPath).length
     const named = tracks.filter((t) => t.artist || t.title).length
     logLine(`viz: ${tracks.length} track(s), ${named} named, ${withArt} with artwork; set artwork ${setArtworkPath ? 'found' : 'none'}`)
-    input = {
+    const fresh: VizInput = {
       audioPath: a.audioPath, durationSeconds: a.duration, setTitle: a.title, setArtist: job.meta?.artistName ?? null,
       setArtworkPath, tracks, width, height, fps: config.viz.fps,
     }
-    writeJson(join(vizDir, 'input.json'), input)
-  }
+    writeJson(join(vizDir, 'input.json'), fresh)
+    return fresh
+  })
   // A finished video from an earlier attempt whose upload failed: do not render 30 GB again.
   const stamp = { inputHash: hashInput(input), sceneVersion: sceneCodeVersion() }
   try {
@@ -247,11 +252,14 @@ async function renderSceneForJob(
     }
   } catch { /* none */ }
   rmSync(join(vizDir, RENDERED_FILE), { force: true })
-  ensureFreeSpace(config.dataDir, config.viz.minFreeGb)
   await renderScene({
     input, vizDir, outFile: a.outFile, audioArgs: chooseAudioArgs(a.codec),
     ffmpegPath: config.ffmpegPath, ffprobePath: config.ffprobePath,
     workers: config.viz.workers, encodeSessions: config.viz.encodeSessions, segmentSeconds: config.viz.segmentSeconds,
+    // Free space is checked once this job holds the render slot: the other job's segments are on the same volume.
+    gate: (stage, fn) => gated(stage, stage === 'render'
+      ? async () => { ensureFreeSpace(config.dataDir, config.viz.minFreeGb); return fn() }
+      : fn),
   }, (f) => onProgress(f * 100), logLine)
   writeJson(join(vizDir, RENDERED_FILE), { ...stamp, bytes: statSync(a.outFile).size })
 }
@@ -259,12 +267,12 @@ async function renderSceneForJob(
 /** The render stage of a scene job: resumes from finished segments, retried VIZ_RENDER_RETRIES times. */
 async function renderSceneWithRetries(
   ctx: AppContext, job: Job, a: Parameters<typeof renderSceneForJob>[2],
-  onProgress: (percent: number) => void, logLine: (line: string) => void,
+  onProgress: (percent: number) => void, logLine: (line: string) => void, gated: Gated,
 ): Promise<void> {
   const { renderRetries, retryDelaySeconds } = ctx.config.viz
   for (let attempt = 0; ; attempt++) {
     try {
-      await renderSceneForJob(ctx, job, a, onProgress, logLine)
+      await renderSceneForJob(ctx, job, a, onProgress, logLine, gated)
       return
     } catch (e: any) {
       if (attempt >= renderRetries) throw e
@@ -287,6 +295,10 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
   const logLine = (line: string) => { jobs.appendLog(jobId, line); emit({ type: 'log', line }) }
   const setStatus = (status: SseMessage['status']) => { jobs.setStatus(jobId, status!); emit({ type: 'status', status }) }
   const scene = job.style === 'scene'
+  const gated: Gated = (stage, fn) => ctx.gate.run(stage, jobId, fn, (holder) => {
+    const other = jobs.get(holder)
+    logLine(`waiting for the ${stage} stage: ${other?.title ? `"${other.title}"` : `job ${holder}`} is in it`)
+  })
   /** How far the job got: a scene job that fails while rendering or uploading keeps its work dir. */
   let stage: 'download' | 'render' | 'upload' | 'done' = 'download'
 
@@ -318,10 +330,10 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
       logLine(`using uploaded file ${name}`)
       emit({ type: 'progress', phase: 'download', percent: 100 })
     } else {
-      ({ file, title } = await downloadAudio(
+      ({ file, title } = await gated('download', () => downloadAudio(
         { ytdlpPath: config.ytdlpPath, url: job.url, workDir },
         (p) => emit({ type: 'progress', phase: 'download', percent: p }), logLine,
-      ))
+      )))
     }
     if (job.style === 'scene' && !resumed) writeSourceRecord(workDir, file, title)
     const finalTitle = job.title || title
@@ -338,16 +350,16 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
     if (scene) {
       stage = 'render'
       await renderSceneWithRetries(ctx, job, { workDir, audioPath: file, duration, codec, title: finalTitle, outFile },
-        (p) => emit({ type: 'progress', phase: 'transcode', percent: p }), logLine)
+        (p) => emit({ type: 'progress', phase: 'transcode', percent: p }), logLine, gated)
     } else {
-      await renderVideo(
+      await gated('render', () => renderVideo(
         {
           ffmpegPath: config.ffmpegPath, style: job.style, mode: 'line', size: config.size,
           fps, durSec: duration, audioInput: file, audioArgs: chooseAudioArgs(codec),
           outFile, workDir, cpu: false,
         },
         (p) => emit({ type: 'progress', phase: 'transcode', percent: p }), logLine,
-      )
+      ))
     }
 
     // 4. upload
@@ -355,15 +367,18 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
     setStatus('uploading')
     // A tracked job names the Google project (account) it was handed out for; UI jobs use the primary.
     const acct = ctx.accountFor(job.meta?.account)
-    const accessToken = await getValidAccessToken(acct.store, acct.google)
-    const { videoId, videoUrl, privacyApplied } = await uploadVideo(
-      {
-        accessToken, filePath: outFile, title: finalTitle,
-        description: describeJob(job),
-        privacy: job.privacy, categoryId: config.youtubeCategoryId,
-      },
-      (p) => emit({ type: 'progress', phase: 'upload', percent: p }),
-    )
+    const { accessToken, videoId, videoUrl, privacyApplied } = await gated('upload', async () => {
+      const accessToken = await getValidAccessToken(acct.store, acct.google)
+      const uploaded = await uploadVideo(
+        {
+          accessToken, filePath: outFile, title: finalTitle,
+          description: describeJob(job),
+          privacy: job.privacy, categoryId: config.youtubeCategoryId,
+        },
+        (p) => emit({ type: 'progress', phase: 'upload', percent: p }),
+      )
+      return { accessToken, ...uploaded }
+    })
     jobs.setResult(jobId, videoId, videoUrl, privacyApplied, job.style)
     stage = 'done'
     if (privacyApplied && privacyApplied !== job.privacy) {

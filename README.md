@@ -23,7 +23,7 @@ Cloudflare Access.
 set a followed DJ has on 1001tracklists. Sets with **no YouTube recording but a
 SoundCloud / hearthis.at one** are queued there for mkvid; with `TRACKED_URL` +
 `TRACKED_TOKEN` set, mkvid polls that queue (`TRACKED_POLL_SECONDS`, default 60)
-whenever its render slot is free and:
+whenever one of its two job slots is free and:
 
 1. **claims** one request (`POST /mkvid/claim`, bearer `TRACKED_TOKEN` = the
    Worker's `MKVID_TOKEN`) — the set page title, the recording URL and the
@@ -42,7 +42,11 @@ whenever its render slot is free and:
 3. **checks the recording is the full set**: `yt-dlp --print duration`, refused
    as `incomplete_recording` (permanent) when it ends more than 90 s before the
    tracklist's last cue — a clip is not the set;
-4. runs the normal pipeline — `static` waveform, uploaded as `TRACKED_PRIVACY`
+4. runs the normal pipeline (two sets at once, never in the same stage: one
+   downloads, analyses, assembles or uploads while the other renders, so two
+   renders never share the CPU; the waiting one renews its claim with
+   `POST /mkvid/job` on every poll so tracked's claim TTL cannot hand it out
+   again) — `static` waveform, uploaded as `TRACKED_PRIVACY`
    (default **unlisted**), the 1001tracklists URL in the description;
 5. **reports back**: `POST /mkvid/complete` with the video id, the privacy
    YouTube actually applied (an unverified OAuth app forces `private` — tracked

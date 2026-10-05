@@ -10,6 +10,7 @@ import { makeKvCache } from './db/kv.js'
 import { makePushRepo } from './db/push.js'
 import { SseHub } from './lib/sse.js'
 import { JobQueue } from './lib/queue.js'
+import { StageGate } from './lib/stage-gate.js'
 import { runJob, claimSceneResume, isKeptWork, pruneKeptWork } from './lib/pipeline.js'
 import { log } from './lib/log.js'
 import { makeTrackedClient, reportJobToTracked, type TrackedClient } from './lib/tracked.js'
@@ -30,9 +31,14 @@ export interface AppContext {
   push: ReturnType<typeof makePushRepo>
   hub: SseHub
   queue: JobQueue
+  /** One job per stage at a time (download, analyse, render, assemble, upload). */
+  gate: StageGate
   /** Client for tracked's mkvid queue; null when TRACKED_URL/TRACKED_TOKEN are unset. */
   tracked: TrackedClient | null
 }
+
+/** Jobs in flight at once. More would only queue at the render stage. */
+export const JOB_SLOTS = 2
 
 export function buildContext(config: Config, opts: { tracked?: TrackedClient | null } = {}): AppContext {
   const db = openDb(config.dataDir === ':memory:' ? ':memory:' : join(config.dataDir, 'db', 'mkvid.sqlite'))
@@ -41,6 +47,7 @@ export function buildContext(config: Config, opts: { tracked?: TrackedClient | n
     jobs: makeJobsRepo(db), tokens: makeTokenStore(db, 'primary'), tokensShared: config.googleShared ? makeTokenStore(db, 'shared') : null,
     kv: makeKvCache(db), push: makePushRepo(db),
     hub: new SseHub(),
+    gate: new StageGate(),
     tracked: opts.tracked !== undefined ? opts.tracked : config.tracked ? makeTrackedClient(config.tracked) : null,
   } as AppContext
   ctx.accountFor = (account) =>
@@ -55,7 +62,9 @@ export function buildContext(config: Config, opts: { tracked?: TrackedClient | n
   }
   // After every job, hand its outcome to tracked if it came from there (a
   // no-op for UI jobs). Reads the job row, so it is the durable status that
-  // gets reported, not an in-memory event.
+  // gets reported, not an in-memory event. Two jobs at a time: the stage gate
+  // keeps them in different stages (one renders while the other downloads,
+  // analyses, assembles or uploads).
   ctx.queue = new JobQueue(async (jobId) => {
     try {
       await runJob(ctx, jobId)
@@ -66,7 +75,7 @@ export function buildContext(config: Config, opts: { tracked?: TrackedClient | n
     }
     const job = ctx.jobs.get(jobId)
     if (job) await reportJobToTracked(ctx, job, ctx.tracked)
-  })
+  }, JOB_SLOTS)
   // Recover from a crash/restart mid-job. Jobs of the old styles become
   // `interrupted`; a scene job whose audio was downloaded goes back on the
   // queue and resumes from its finished segments (hours of rendering that a

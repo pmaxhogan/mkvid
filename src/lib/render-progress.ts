@@ -51,6 +51,11 @@ export interface RenderProgress {
   status: Job['status']
   startedAt: number
   stage: StageKey
+  /**
+   * The stage this job is queued for while the other job in flight runs it
+   * (stage-gate.ts); `stage` is then that stage, shown as not started.
+   */
+  waiting: StageKey | null
   /** 0..1 over the whole job, by the stage weights (an active stage without a known percent counts as not started). */
   fraction: number
   /** From the newest segment line ("~N min left"), while rendering. */
@@ -72,7 +77,7 @@ const lastMatch = (lines: string[], re: RegExp): RegExpExecArray | null => {
   return null
 }
 
-export function describeProgress(job: Job, logs: { viz: string[]; download: string | null }, live: LiveProgress | null): RenderProgress {
+export function describeProgress(job: Job, logs: { viz: string[]; download: string | null }, live: LiveProgress | null, waiting: StageKey | null = null): RenderProgress {
   let cut = -1
   logs.viz.forEach((l, i) => { if (ATTEMPT_RE.test(l)) cut = i })
   const viz = logs.viz.slice(cut + 1).filter((l) => l.startsWith('viz:'))
@@ -114,6 +119,10 @@ export function describeProgress(job: Job, logs: { viz: string[]; download: stri
     stage = 'analyse'
   }
 
+  // Queued for a stage the other job holds: that stage, not started yet.
+  const waitingFor = waiting && table.some((s) => s.key === waiting) ? waiting : null
+  if (waitingFor) { stage = waitingFor; progress = 0 }
+
   const idx = table.findIndex((s) => s.key === stage)
   const stages: StageView[] = table.map((s, i) => ({
     ...s,
@@ -130,6 +139,7 @@ export function describeProgress(job: Job, logs: { viz: string[]; download: stri
     status: job.status,
     startedAt: job.createdAt,
     stage,
+    waiting: waitingFor,
     fraction,
     renderMinutesLeft: stage === 'render' ? minutesLeft : null,
     segments: stage === 'render' || stage === 'assemble' ? segments : null,

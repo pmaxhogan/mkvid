@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../src/config.js'
-import { buildContext } from '../src/context.js'
+import { buildContext, JOB_SLOTS } from '../src/context.js'
+import { JobQueue } from '../src/lib/queue.js'
 import {
   COMPLETENESS_SLACK_SECONDS,
   isIncompleteRecording,
@@ -310,8 +311,8 @@ describe('pollTracked', () => {
     expect(job).toMatchObject({ url: request.sourceUrl, title: request.setTitle, privacy: 'unlisted', style: 'static' })
     expect(job.meta).toEqual({ origin: 'tracked', account: 'primary', requestId: request.id, setUrl: request.setUrl, sourceUrl: request.sourceUrl, lastCueSeconds: 3600, artistName: 'DJ', trackCount: 20 })
     expect(client.calls.find((c) => c[0] === 'job')).toEqual(['job', { id: request.id, jobId }])
-    // While the job is running the slot is busy.
-    expect(await pollTracked(ctx, client)).toEqual({ action: 'busy' })
+    // The second job slot is free: it asks for more (tracked has none).
+    expect(await pollTracked(ctx, client)).toEqual({ action: 'idle' })
 
     // The pipeline fails fast (yt-dlp binary does not exist) and the queue
     // processor delivers the failure to tracked, marking the job reported.
@@ -319,6 +320,44 @@ describe('pollTracked', () => {
     await vi.waitFor(() => expect(client.calls.some((c) => c[0] === 'fail' && (c[1] as { jobId: string }).jobId === jobId)).toBe(true), { timeout: 5000 })
     await vi.waitFor(() => expect(ctx.jobs.get(jobId)!.meta!.reported).toBe(true), { timeout: 5000 })
     expect(ctx.jobs.listUnreportedTracked()).toEqual([])
+  })
+})
+
+describe('pollTracked with two job slots', () => {
+  /** Jobs that never finish: the slots stay taken. */
+  const holdJobs = (ctx: ReturnType<typeof buildContext>) => { ctx.queue = new JobQueue(() => new Promise<void>(() => {}), JOB_SLOTS) }
+  const second = { ...request, id: '22222222-2222-4222-8222-222222222222' }
+  const third = { ...request, id: '33333333-3333-4333-8333-333333333333' }
+  const opts = { probe: async () => 3700, resolve: async (u: string) => u }
+
+  it('claims a second set while one is in flight, is busy with two, and renews both claims on every tick', async () => {
+    const client = fakeClient([request, second, third])
+    const ctx = buildContext(cfg, { tracked: client })
+    connected(ctx)
+    holdJobs(ctx)
+    const a = await pollTracked(ctx, client, opts)
+    const b = await pollTracked(ctx, client, opts)
+    expect([a.action, b.action]).toEqual(['started', 'started'])
+    expect(ctx.queue.running).toBe(2)
+    const before = client.calls.length
+    expect(await pollTracked(ctx, client, opts)).toEqual({ action: 'busy' })
+    expect(client.calls.slice(before)).toEqual([
+      ['job', { id: request.id, jobId: (a as { jobId: string }).jobId }],
+      ['job', { id: second.id, jobId: (b as { jobId: string }).jobId }],
+    ])
+  })
+
+  it('a set handed out again while its job is still here keeps that job and starts nothing', async () => {
+    const client = fakeClient([request, request])
+    const ctx = buildContext(cfg, { tracked: client })
+    connected(ctx)
+    holdJobs(ctx)
+    const a = await pollTracked(ctx, client, opts)
+    const jobId = (a as { jobId: string }).jobId
+    expect(await pollTracked(ctx, client, opts)).toEqual({ action: 'already_running', jobId, requestId: request.id })
+    expect(ctx.jobs.list(10).map((j) => j.id)).toEqual([jobId])
+    expect(ctx.queue.running).toBe(1)
+    expect(client.calls.at(-1)).toEqual(['job', { id: request.id, jobId }])
   })
 })
 

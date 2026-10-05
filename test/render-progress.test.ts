@@ -108,7 +108,7 @@ describe('GET /api/videos/render-progress', () => {
   it('is bearer-gated and answers null when nothing runs', async () => {
     const ctx = buildContext(cfg, { tracked: null })
     expect((await get(app(ctx), 'wrong')).status).toBe(401)
-    expect(await (await get(app(ctx))).json()).toEqual({ running: null })
+    expect(await (await get(app(ctx))).json()).toEqual({ running: null, jobs: [] })
   })
 
   it('describes the running job from its logs and the live progress', async () => {
@@ -127,5 +127,25 @@ describe('GET /api/videos/render-progress', () => {
     ctx.hub.publish('j1', { type: 'done', videoUrl: 'x' })
     expect(((await (await get(app(ctx))).json()) as any).running).toMatchObject({ stage: 'analyse', segments: null })
     expect(ctx.hub.progress('j1')).toBeNull()
+  })
+
+  it('lists both jobs in flight, oldest first, the one queued for a stage the other holds as waiting', async () => {
+    const ctx = buildContext(cfg, { tracked: null })
+    ctx.jobs.create({ id: 'j1', url: 'u', title: 'first', privacy: 'unlisted', style: 'scene', meta: job().meta! })
+    ctx.jobs.setStatus('j1', 'transcoding')
+    ctx.jobs.appendLog('j1', 'viz: 4 segment(s), 0 already done; nvenc')
+    await new Promise((r) => setTimeout(r, 2))
+    ctx.jobs.create({ id: 'j2', url: 'u', title: 'second', privacy: 'unlisted', style: 'scene', meta: job().meta! })
+    ctx.jobs.setStatus('j2', 'transcoding')
+    let release!: () => void
+    const held = ctx.gate.run('render', 'j1', () => new Promise<void>((r) => { release = r }))
+    const waited = ctx.gate.run('render', 'j2', async () => {})
+    const body = (await (await get(app(ctx))).json()) as any
+    expect(body.jobs.map((j: any) => [j.jobId, j.stage, j.waiting])).toEqual([['j1', 'render', null], ['j2', 'render', 'render']])
+    expect(body.jobs[1].stages.find((s: any) => s.key === 'render')).toMatchObject({ state: 'active', progress: 0 })
+    expect(body.running.jobId).toBe('j1')
+    release()
+    await Promise.all([held, waited])
+    expect(ctx.gate.waitingFor('j2')).toBeNull()
   })
 })

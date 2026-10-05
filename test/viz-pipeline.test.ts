@@ -11,23 +11,36 @@ const h = vi.hoisted(() => ({
   upload: [] as Array<'ok' | Error>,
   uploadCalls: 0,
   staticRender: vi.fn(async () => { throw new Error('ffmpeg exploded') }),
+  /** Stage enter/leave order across jobs (overlap test). */
+  events: [] as string[],
+  renderHold: null as null | (() => Promise<void>),
+  uploadHold: null as null | (() => Promise<void>),
 }))
 vi.mock('../src/viz/render.js', async (orig) => ({
   ...(await orig<typeof import('../src/viz/render.js')>()),
-  renderScene: vi.fn(async (o: { vizDir: string; outFile: string }, onProgress: (f: number) => void) => {
-    h.renderCalls.push(o.vizDir)
-    const next = h.render.shift() ?? 'ok'
-    // Every attempt finishes one more segment before it (maybe) fails, like a real resume.
-    const n = h.renderCalls.length
-    writeFileSync(join(o.vizDir, `seg-${String(n - 1).padStart(5, '0')}.mp4`), `segment ${n}`)
-    if (next instanceof Error) throw next
-    writeFileSync(o.outFile, 'the finished video')
+  renderScene: vi.fn(async (o: { vizDir: string; outFile: string; gate?: (stage: string, fn: () => Promise<void>) => Promise<void> }, onProgress: (f: number) => void) => {
+    const gate = o.gate ?? ((_stage: string, fn: () => Promise<void>) => fn())
+    await gate('render', async () => {
+      h.renderCalls.push(o.vizDir)
+      const next = h.render.shift() ?? 'ok'
+      // Every attempt finishes one more segment before it (maybe) fails, like a real resume.
+      const n = h.renderCalls.length
+      writeFileSync(join(o.vizDir, `seg-${String(n - 1).padStart(5, '0')}.mp4`), `segment ${n}`)
+      h.events.push(`render+ ${o.vizDir}`)
+      await h.renderHold?.()
+      h.events.push(`render- ${o.vizDir}`)
+      if (next instanceof Error) throw next
+    })
+    await gate('assemble', async () => { writeFileSync(o.outFile, 'the finished video') })
     onProgress(1)
   }),
 }))
 vi.mock('../src/lib/youtube.js', () => ({
-  uploadVideo: vi.fn(async () => {
+  uploadVideo: vi.fn(async (o: { filePath: string }) => {
     h.uploadCalls++
+    h.events.push(`upload+ ${o.filePath}`)
+    await h.uploadHold?.()
+    h.events.push(`upload- ${o.filePath}`)
     const next = h.upload.shift() ?? 'ok'
     if (next instanceof Error) throw next
     return { videoId: 'vid1', videoUrl: 'https://youtu.be/vid1', privacyApplied: 'private' }
@@ -70,6 +83,7 @@ function setup(env: Record<string, string> = {}) {
 beforeEach(() => {
   h.render.length = 0; h.renderCalls.length = 0; h.upload.length = 0; h.uploadCalls = 0
   h.staticRender.mockClear()
+  h.events.length = 0; h.renderHold = null; h.uploadHold = null
 })
 
 describe('scene render failures', () => {
@@ -284,5 +298,32 @@ describe('tracked retries adopt the kept work', () => {
     await runJob(s.ctx, 'other-url') // yt-dlp is not configured here: the download fails
     expect(s.ctx.jobs.getLogs('other-url', 100).join('\n')).not.toMatch(/reusing/)
     expect(existsSync(s.work('first'))).toBe(true)
+  })
+})
+
+describe('two jobs in flight', () => {
+  it('one uploads while the other renders, never two in the same stage', async () => {
+    const { ctx, uploadJob } = setup()
+    for (const id of ['a', 'b', 'c']) uploadJob(id)
+    // Long enough for the other job to catch up with this one.
+    h.renderHold = () => new Promise((r) => setTimeout(r, 40))
+    h.uploadHold = () => new Promise((r) => setTimeout(r, 40))
+    for (const id of ['a', 'b', 'c']) ctx.queue.enqueue(id)
+    expect(ctx.queue.running).toBe(2)
+    await vi.waitFor(() => expect(['a', 'b', 'c'].map((id) => ctx.jobs.get(id)!.status)).toEqual(['done', 'done', 'done']), { timeout: 5000 })
+
+    const inStage = { render: 0, upload: 0 }
+    const most = { render: 0, upload: 0 }
+    let overlapped = false
+    for (const e of h.events) {
+      const stage = e.startsWith('render') ? 'render' : 'upload'
+      inStage[stage] += e[stage.length] === '+' ? 1 : -1
+      most[stage] = Math.max(most[stage], inStage[stage])
+      if (inStage.render && inStage.upload) overlapped = true
+    }
+    expect(most).toEqual({ render: 1, upload: 1 })
+    expect(overlapped).toBe(true)
+    // The job that waited for the render slot says so in its log.
+    expect(ctx.jobs.getLogs('b', 50).some((l) => /^waiting for the render stage: "a" is in it$/.test(l))).toBe(true)
   })
 })

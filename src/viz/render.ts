@@ -704,7 +704,15 @@ export interface RenderSceneOptions {
   sceneModule?: string | null
   sceneVersion?: string
   analyze?: (o: { input: VizInput; vizDir: string; ffmpegPath: string; onLog: (l: string) => void }) => Promise<PreparedAnalysis>
+  /**
+   * Runs each stage (analyse, render, assemble) of this job; the pipeline
+   * passes its stage gate so two jobs never run the same stage at once.
+   * Default: run it.
+   */
+  gate?: <T>(stage: 'analyse' | 'render' | 'assemble', fn: () => Promise<T>) => Promise<T>
 }
+
+const ungated = <T>(_stage: string, fn: () => Promise<T>): Promise<T> => fn()
 
 /**
  * Render the whole set to `outFile`, resuming from whatever segments a
@@ -714,17 +722,21 @@ export async function renderScene(o: RenderSceneOptions, onProgress: (fraction: 
   const { input } = o
   const segmentSeconds = o.segmentSeconds ?? DEFAULT_SEGMENT_SECONDS
   mkdirSync(o.vizDir, { recursive: true })
+  const gate = o.gate ?? ungated
 
-  const encoder = await chooseEncoder(o.ffmpegPath, o.encoder ?? 'auto', onLog)
-  const st = statSync(input.audioPath)
-  const fp: VizFingerprint = {
-    audioSize: st.size, audioMtimeMs: Math.round(st.mtimeMs), fps: input.fps, width: input.width, height: input.height,
-    segmentSeconds, inputHash: hashInput(input), sceneVersion: o.sceneVersion ?? sceneCodeVersion(),
-    encoder, encodeArgs: encodeSignature(encoder, input.fps), ffmpegVersion: await ffmpegVersion(o.ffmpegPath),
-  }
-  const manifest = openManifest(o.vizDir, fp, onLog)
+  const { encoder, manifest, analysis } = await gate('analyse', async () => {
+    const encoder = await chooseEncoder(o.ffmpegPath, o.encoder ?? 'auto', onLog)
+    const st = statSync(input.audioPath)
+    const fp: VizFingerprint = {
+      audioSize: st.size, audioMtimeMs: Math.round(st.mtimeMs), fps: input.fps, width: input.width, height: input.height,
+      segmentSeconds, inputHash: hashInput(input), sceneVersion: o.sceneVersion ?? sceneCodeVersion(),
+      encoder, encodeArgs: encodeSignature(encoder, input.fps), ffmpegVersion: await ffmpegVersion(o.ffmpegPath),
+    }
+    const manifest = openManifest(o.vizDir, fp, onLog)
 
-  const analysis = await (o.analyze ?? prepareAnalysis)({ input, vizDir: o.vizDir, ffmpegPath: o.ffmpegPath, onLog })
+    const analysis = await (o.analyze ?? prepareAnalysis)({ input, vizDir: o.vizDir, ffmpegPath: o.ffmpegPath, onLog })
+    return { encoder, manifest, analysis }
+  })
   const segments = planSegments(analysis.frameCount, input.fps, segmentSeconds)
   const isDone = (s: Segment) => manifest.segments[String(s.index)]?.frames === s.endFrame - s.startFrame
   const todo = segments.filter((s) => !isDone(s))
@@ -736,34 +748,38 @@ export async function renderScene(o: RenderSceneOptions, onProgress: (fraction: 
   let framesDone = segments.filter(isDone).reduce((n, s) => n + s.endFrame - s.startFrame, 0)
   const workers = o.workers ?? defaultWorkerCount()
   const sessions = o.encodeSessions ?? 2
-  onLog(`viz: ${segments.length} segment(s), ${segments.length - todo.length} already done; ${encoder}, ${workers} drawing worker(s), ${sessions} encode session(s)`)
+  await gate('render', async () => {
+    onLog(`viz: ${segments.length} segment(s), ${segments.length - todo.length} already done; ${encoder}, ${workers} drawing worker(s), ${sessions} encode session(s)`)
 
-  let lastPermille = -1
-  const report = () => {
-    const f = total > 0 ? (framesDone / total) * RENDER_SHARE : RENDER_SHARE
-    const permille = Math.floor(f * 1000)
-    if (permille !== lastPermille) { lastPermille = permille; onProgress(f) }
-  }
-  report()
+    let lastPermille = -1
+    const report = () => {
+      const f = total > 0 ? (framesDone / total) * RENDER_SHARE : RENDER_SHARE
+      const permille = Math.floor(f * 1000)
+      if (permille !== lastPermille) { lastPermille = permille; onProgress(f) }
+    }
+    report()
 
-  const t0 = Date.now()
-  let framesThisRun = 0
-  await renderSegments({
-    input, analysisPath: analysis.path, sceneModule: o.sceneModule, segments: todo, dir: o.vizDir,
-    ffmpegPath: o.ffmpegPath, ffprobePath: o.ffprobePath, encoder, workers, encodeSessions: sessions,
-    onFrame: () => { framesDone++; framesThisRun++; report() },
-    onSegmentDone: (seg, info) => {
-      manifest.segments[String(seg.index)] = info
-      writeManifest(o.vizDir, manifest)
-      const secs = (Date.now() - t0) / 1000
-      const fps = framesThisRun / Math.max(secs, 1e-3)
-      const eta = fps > 0 ? (total - framesDone) / fps : 0
-      onLog(`viz: segment ${seg.index + 1}/${segments.length} done (${fps.toFixed(1)} fps, ~${Math.round(eta / 60)} min left)`)
-    },
+    const t0 = Date.now()
+    let framesThisRun = 0
+    await renderSegments({
+      input, analysisPath: analysis.path, sceneModule: o.sceneModule, segments: todo, dir: o.vizDir,
+      ffmpegPath: o.ffmpegPath, ffprobePath: o.ffprobePath, encoder, workers, encodeSessions: sessions,
+      onFrame: () => { framesDone++; framesThisRun++; report() },
+      onSegmentDone: (seg, info) => {
+        manifest.segments[String(seg.index)] = info
+        writeManifest(o.vizDir, manifest)
+        const secs = (Date.now() - t0) / 1000
+        const fps = framesThisRun / Math.max(secs, 1e-3)
+        const eta = fps > 0 ? (total - framesDone) / fps : 0
+        onLog(`viz: segment ${seg.index + 1}/${segments.length} done (${fps.toFixed(1)} fps, ~${Math.round(eta / 60)} min left)`)
+      },
+    })
   })
 
-  onLog('viz: assembling')
-  await assemble({ dir: o.vizDir, segments, infos: manifest.segments, audioPath: input.audioPath, audioArgs: o.audioArgs, outFile: o.outFile, ffmpegPath: o.ffmpegPath })
-  await verifyDuration(o.ffprobePath, o.outFile, input.durationSeconds, input.fps)
+  await gate('assemble', async () => {
+    onLog('viz: assembling')
+    await assemble({ dir: o.vizDir, segments, infos: manifest.segments, audioPath: input.audioPath, audioArgs: o.audioArgs, outFile: o.outFile, ffmpegPath: o.ffmpegPath })
+    await verifyDuration(o.ffprobePath, o.outFile, input.durationSeconds, input.fps)
+  })
   onProgress(1)
 }

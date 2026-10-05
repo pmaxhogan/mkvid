@@ -13,7 +13,10 @@
  *     → 401 unauthorized, 503 not configured / YouTube not connected, 502 YouTube error (tracked retries these)
  *
  *   GET /api/videos/render-progress
- *     → 200 { running: RenderProgress | null }   the job being downloaded / rendered / uploaded now
+ *     → 200 { running: RenderProgress | null, jobs: RenderProgress[] }
+ *       every job in flight (up to two, oldest first; each `waiting` for a
+ *       stage the other holds, or null); `running` = the first, for trackeds
+ *       from before two jobs ran at once
  */
 
 import { Hono } from 'hono'
@@ -41,9 +44,9 @@ export function videosRoutes(ctx: AppContext, opts: { api?: VideosDeleteApi; get
     const token = ctx.config.tracked?.token
     if (!token) return c.json({ error: 'not_configured', message: 'TRACKED_URL / TRACKED_TOKEN are not set' }, 503)
     if (!bearerOk(c.req.header('authorization'), token)) return c.json({ error: 'unauthorized' }, 401)
-    const job = ctx.jobs.running()
-    if (!job) return c.json({ running: null })
-    return c.json({ running: describeProgress(job, ctx.jobs.progressLogs(job.id), ctx.hub.progress(job.id)) })
+    const jobs = ctx.jobs.runningAll().map((job) =>
+      describeProgress(job, ctx.jobs.progressLogs(job.id), ctx.hub.progress(job.id), ctx.gate.waitingFor(job.id)))
+    return c.json({ running: jobs[0] ?? null, jobs })
   })
   app.post('/:id/delete', async (c) => {
     const token = ctx.config.tracked?.token
