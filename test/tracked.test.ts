@@ -378,6 +378,19 @@ describe('pollTracked with no job limit, one set per stage', () => {
     expect(await pollTracked(ctx, client, opts)).toEqual({ action: 'busy' })
   })
 
+  it('a set waiting for upload does not stop a claim: render is free for the next one', async () => {
+    const client = fakeClient([request, second, third])
+    const ctx = buildContext(cfg, { tracked: client })
+    connected(ctx)
+    holdJobs(ctx)
+    const a = (await pollTracked(ctx, client, opts)) as { jobId: string }
+    hold(ctx, 'upload', a)
+    const b = (await pollTracked(ctx, client, opts)) as { jobId: string }
+    hold(ctx, 'upload', b) // b waits for a's upload
+    expect(ctx.gate.waiting()).toBe(1)
+    expect(await pollTracked(ctx, client, opts)).toMatchObject({ action: 'started', requestId: third.id })
+  })
+
   it('a set handed out again while its job is still here keeps that job and starts nothing', async () => {
     const client = fakeClient([request, request])
     const ctx = buildContext(cfg, { tracked: client })

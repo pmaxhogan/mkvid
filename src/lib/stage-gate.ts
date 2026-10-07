@@ -38,10 +38,10 @@ export class StageGate {
     return n
   }
 
-  /** Jobs waiting for a stage another job holds. */
-  waiting(): number {
+  /** Jobs waiting for a stage another job holds (only `stages`, when given). */
+  waiting(stages?: readonly GateStage[]): number {
     let n = 0
-    for (const s of this.slots.values()) n += s.waiters.length
+    for (const [stage, s] of this.slots) if (!stages || stages.includes(stage)) n += s.waiters.length
     return n
   }
 

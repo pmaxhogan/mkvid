@@ -186,14 +186,20 @@ export async function reportJobToTracked(ctx: AppContext, job: Job, client: Trac
 }
 
 /**
- * A claimed set could start its first stage (download) right away: download
- * is free, no job waits for a stage, and every job in flight holds one. There
- * is no job limit; this keeps the sets here to one per stage instead of
- * claiming every pending request and parking them at the render stage.
+ * A claimed set could start downloading right away and would not queue behind
+ * another on its way to render: download is free, no job waits for download,
+ * analyse or render (a set waiting for upload or assemble is no reason to
+ * idle the render slot), and every job in flight holds or waits for a stage
+ * (none is between stages or not started yet). There is no job limit; this
+ * keeps the sets here to about one per stage instead of claiming every
+ * pending request and parking them at the render stage.
  */
 export function canClaim(ctx: Pick<AppContext, 'queue' | 'gate'>): boolean {
-  return ctx.queue.hasFreeSlot && ctx.gate.holder('download') === null && ctx.gate.waiting() === 0 && ctx.queue.running === ctx.gate.held()
+  const g = ctx.gate
+  return ctx.queue.hasFreeSlot && g.holder('download') === null && g.waiting(CLAIM_BLOCKING_STAGES) === 0 &&
+    ctx.queue.running === g.held() + g.waiting()
 }
+const CLAIM_BLOCKING_STAGES = ['download', 'analyse', 'render'] as const
 
 /**
  * One poll: retry undelivered outcomes, renew the claims of the sets in
