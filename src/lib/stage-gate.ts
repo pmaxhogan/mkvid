@@ -1,7 +1,10 @@
 /**
- * One job per stage at a time. The queue runs two jobs (queue.ts); this keeps
- * them in different stages, so one set downloads, analyses, assembles or
- * uploads while the other renders, and two renders never fight over the CPU.
+ * One job per stage at a time. The queue has no job limit (queue.ts): this is
+ * the limit, so sets move through the stages like a pipeline (one downloads
+ * while another analyses, a third renders, ...) and two renders never fight
+ * over the CPU. The tracked poller claims a new set only when every job in
+ * flight holds a stage and download is free (tracked.ts), so at most one set
+ * per stage is here and none piles up waiting.
  *
  * A job holds a stage only while it runs that stage and never holds one while
  * waiting for the next, so two jobs cannot deadlock. Waiters are served in
@@ -26,6 +29,20 @@ export class StageGate {
   /** The job running `stage` now, if any. */
   holder(stage: GateStage): string | null {
     return this.slots.get(stage)?.holder ?? null
+  }
+
+  /** Stages some job is running now. A job holds at most one at a time. */
+  held(): number {
+    let n = 0
+    for (const s of this.slots.values()) if (s.holder !== null) n++
+    return n
+  }
+
+  /** Jobs waiting for a stage another job holds. */
+  waiting(): number {
+    let n = 0
+    for (const s of this.slots.values()) n += s.waiters.length
+    return n
   }
 
   /** The stage `jobId` is queued for, if it is waiting for one. */

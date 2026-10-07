@@ -37,8 +37,12 @@ export interface AppContext {
   tracked: TrackedClient | null
 }
 
-/** Jobs in flight at once. More would only queue at the render stage. */
-export const JOB_SLOTS = 2
+/**
+ * Jobs in flight at once: no limit. The stage gate allows one job per stage,
+ * and the tracked poller claims a set only when it can start downloading
+ * right away (tracked.ts canClaim), so this many is at most one per stage.
+ */
+export const JOB_SLOTS = Number.POSITIVE_INFINITY
 
 export function buildContext(config: Config, opts: { tracked?: TrackedClient | null } = {}): AppContext {
   const db = openDb(config.dataDir === ':memory:' ? ':memory:' : join(config.dataDir, 'db', 'mkvid.sqlite'))
@@ -62,9 +66,9 @@ export function buildContext(config: Config, opts: { tracked?: TrackedClient | n
   }
   // After every job, hand its outcome to tracked if it came from there (a
   // no-op for UI jobs). Reads the job row, so it is the durable status that
-  // gets reported, not an in-memory event. Two jobs at a time: the stage gate
-  // keeps them in different stages (one renders while the other downloads,
-  // analyses, assembles or uploads).
+  // gets reported, not an in-memory event. No job limit: the stage gate
+  // keeps every job in a different stage (one renders while others download,
+  // analyse, assemble or upload).
   ctx.queue = new JobQueue(async (jobId) => {
     try {
       await runJob(ctx, jobId)

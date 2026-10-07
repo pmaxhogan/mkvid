@@ -211,7 +211,7 @@ export function adoptKeptWork(ctx: AppContext, job: Job, workDir: string, logLin
   return false
 }
 
-/** Runs `fn` holding one stage of the job (ctx.gate), so two jobs never run the same stage at once. */
+/** Runs `fn` holding one stage of the job (ctx.gate), so no two jobs run the same stage at once. */
 type Gated = <T>(stage: GateStage, fn: () => Promise<T>) => Promise<T>
 
 async function renderSceneForJob(

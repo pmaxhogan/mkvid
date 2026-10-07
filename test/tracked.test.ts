@@ -311,8 +311,8 @@ describe('pollTracked', () => {
     expect(job).toMatchObject({ url: request.sourceUrl, title: request.setTitle, privacy: 'unlisted', style: 'static' })
     expect(job.meta).toEqual({ origin: 'tracked', account: 'primary', requestId: request.id, setUrl: request.setUrl, sourceUrl: request.sourceUrl, lastCueSeconds: 3600, artistName: 'DJ', trackCount: 20 })
     expect(client.calls.find((c) => c[0] === 'job')).toEqual(['job', { id: request.id, jobId }])
-    // The second job slot is free: it asks for more (tracked has none).
-    expect(await pollTracked(ctx, client)).toEqual({ action: 'idle' })
+    // The new job has not taken a stage yet (it is about to download): no second claim.
+    expect(await pollTracked(ctx, client)).toEqual({ action: 'busy' })
 
     // The pipeline fails fast (yt-dlp binary does not exist) and the queue
     // processor delivers the failure to tracked, marking the job reported.
@@ -323,28 +323,59 @@ describe('pollTracked', () => {
   })
 })
 
-describe('pollTracked with two job slots', () => {
-  /** Jobs that never finish: the slots stay taken. */
+describe('pollTracked with no job limit, one set per stage', () => {
+  /** Jobs that never finish and take no stage on their own: the test puts them in one. */
   const holdJobs = (ctx: ReturnType<typeof buildContext>) => { ctx.queue = new JobQueue(() => new Promise<void>(() => {}), JOB_SLOTS) }
+  /** Puts the job in `stage` until the returned function is called. */
+  const hold = (ctx: ReturnType<typeof buildContext>, stage: 'download' | 'render' | 'upload', r: { jobId?: string }) => {
+    let release!: () => void
+    const done = ctx.gate.run(stage, r.jobId!, () => new Promise<void>((res) => { release = res }))
+    return async () => { release(); await done }
+  }
   const second = { ...request, id: '22222222-2222-4222-8222-222222222222' }
   const third = { ...request, id: '33333333-3333-4333-8333-333333333333' }
+  const fourth = { ...request, id: '44444444-4444-4444-8444-444444444444' }
   const opts = { probe: async () => 3700, resolve: async (u: string) => u }
 
-  it('claims a second set while one is in flight, is busy with two, and renews both claims on every tick', async () => {
+  it('claims the next set whenever download is free and every set here runs a stage, and renews every claim on each tick', async () => {
+    const client = fakeClient([request, second, third, fourth])
+    const ctx = buildContext(cfg, { tracked: client })
+    connected(ctx)
+    holdJobs(ctx)
+    const a = (await pollTracked(ctx, client, opts)) as { action: string; jobId: string }
+    expect(a.action).toBe('started')
+    const downloaded = hold(ctx, 'download', a)
+    expect(await pollTracked(ctx, client, opts)).toEqual({ action: 'busy' }) // a is downloading
+    // a moves on to render: download is free, the next set is claimed
+    await downloaded()
+    hold(ctx, 'render', a)
+    const b = (await pollTracked(ctx, client, opts)) as { action: string; jobId: string }
+    expect(b.action).toBe('started')
+    hold(ctx, 'upload', b)
+    const c = (await pollTracked(ctx, client, opts)) as { action: string; jobId: string }
+    expect(c.action).toBe('started') // a third set at once: no job limit
+    expect(ctx.queue.running).toBe(3)
+    // c has not taken a stage yet: nothing more until it does
+    const before = client.calls.length
+    expect(await pollTracked(ctx, client, opts)).toEqual({ action: 'busy' })
+    expect(client.calls.slice(before)).toEqual([
+      ['job', { id: request.id, jobId: a.jobId }],
+      ['job', { id: second.id, jobId: b.jobId }],
+      ['job', { id: third.id, jobId: c.jobId }],
+    ])
+  })
+
+  it('never claims while a set here waits for a stage another holds', async () => {
     const client = fakeClient([request, second, third])
     const ctx = buildContext(cfg, { tracked: client })
     connected(ctx)
     holdJobs(ctx)
-    const a = await pollTracked(ctx, client, opts)
-    const b = await pollTracked(ctx, client, opts)
-    expect([a.action, b.action]).toEqual(['started', 'started'])
-    expect(ctx.queue.running).toBe(2)
-    const before = client.calls.length
+    const a = (await pollTracked(ctx, client, opts)) as { jobId: string }
+    hold(ctx, 'render', a)
+    const b = (await pollTracked(ctx, client, opts)) as { jobId: string }
+    hold(ctx, 'render', b) // b waits for a's render slot
+    expect(ctx.gate.waiting()).toBe(1)
     expect(await pollTracked(ctx, client, opts)).toEqual({ action: 'busy' })
-    expect(client.calls.slice(before)).toEqual([
-      ['job', { id: request.id, jobId: (a as { jobId: string }).jobId }],
-      ['job', { id: second.id, jobId: (b as { jobId: string }).jobId }],
-    ])
   })
 
   it('a set handed out again while its job is still here keeps that job and starts nothing', async () => {
@@ -354,6 +385,7 @@ describe('pollTracked with two job slots', () => {
     holdJobs(ctx)
     const a = await pollTracked(ctx, client, opts)
     const jobId = (a as { jobId: string }).jobId
+    hold(ctx, 'render', { jobId })
     expect(await pollTracked(ctx, client, opts)).toEqual({ action: 'already_running', jobId, requestId: request.id })
     expect(ctx.jobs.list(10).map((j) => j.id)).toEqual([jobId])
     expect(ctx.queue.running).toBe(1)

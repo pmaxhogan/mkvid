@@ -301,15 +301,15 @@ describe('tracked retries adopt the kept work', () => {
   })
 })
 
-describe('two jobs in flight', () => {
-  it('one uploads while the other renders, never two in the same stage', async () => {
+describe('several jobs in flight', () => {
+  it('all start at once (no job limit), never two in the same stage', async () => {
     const { ctx, uploadJob } = setup()
     for (const id of ['a', 'b', 'c']) uploadJob(id)
     // Long enough for the other job to catch up with this one.
     h.renderHold = () => new Promise((r) => setTimeout(r, 40))
     h.uploadHold = () => new Promise((r) => setTimeout(r, 40))
     for (const id of ['a', 'b', 'c']) ctx.queue.enqueue(id)
-    expect(ctx.queue.running).toBe(2)
+    expect(ctx.queue.running).toBe(3)
     await vi.waitFor(() => expect(['a', 'b', 'c'].map((id) => ctx.jobs.get(id)!.status)).toEqual(['done', 'done', 'done']), { timeout: 5000 })
 
     const inStage = { render: 0, upload: 0 }

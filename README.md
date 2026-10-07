@@ -23,7 +23,7 @@ Cloudflare Access.
 set a followed DJ has on 1001tracklists. Sets with **no YouTube recording but a
 SoundCloud / hearthis.at one** are queued there for mkvid; with `TRACKED_URL` +
 `TRACKED_TOKEN` set, mkvid polls that queue (`TRACKED_POLL_SECONDS`, default 60)
-whenever one of its two job slots is free and:
+whenever a new set could start downloading right away (no job limit: one set per stage - download, analyse, render, assemble, upload - so a set is claimed only when download is free and every set here is running a stage) and:
 
 1. **claims** one request (`POST /mkvid/claim`, bearer `TRACKED_TOKEN` = the
    Worker's `MKVID_TOKEN`) — the set page title, the recording URL and the

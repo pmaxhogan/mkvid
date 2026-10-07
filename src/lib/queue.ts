@@ -1,9 +1,9 @@
 import { log } from './log.js'
 
 /**
- * FIFO job queue running up to `concurrency` jobs at once. mkvid runs two:
- * the stage gate (stage-gate.ts) keeps them from being in the same stage, so
- * one set downloads, analyses or uploads while the other renders.
+ * FIFO job queue running up to `concurrency` jobs at once. mkvid sets no
+ * limit (Infinity): the stage gate (stage-gate.ts) keeps any two jobs out of
+ * the same stage, and the tracked poller only claims what can start a stage.
  */
 export class JobQueue {
   private q: string[] = []

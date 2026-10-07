@@ -14,9 +14,10 @@
  *      upload and report — is retried instead of the set being rendered twice
  *      once tracked's claim expires);
  *   2. renew tracked's claim on every set queued or running here (`/mkvid/job`
- *      again): with two jobs in flight a set can wait for the render slot,
+ *      again): with several jobs in flight a set can wait for a stage,
  *      and a claim older than tracked's claim TTL is handed out again;
- *   3. if a job slot is free (two run at once, in different stages — see
+ *   3. if a new set could start downloading now (canClaim: download free and
+ *      every job here holding a stage, one job per stage — see
  *      stage-gate.ts), claim one request, telling tracked which
  *      upload accounts (Google projects) currently have a connected YouTube
  *      token — it fills its own project's quota day first, then the sync's —
@@ -185,6 +186,16 @@ export async function reportJobToTracked(ctx: AppContext, job: Job, client: Trac
 }
 
 /**
+ * A claimed set could start its first stage (download) right away: download
+ * is free, no job waits for a stage, and every job in flight holds one. There
+ * is no job limit; this keeps the sets here to one per stage instead of
+ * claiming every pending request and parking them at the render stage.
+ */
+export function canClaim(ctx: Pick<AppContext, 'queue' | 'gate'>): boolean {
+  return ctx.queue.hasFreeSlot && ctx.gate.holder('download') === null && ctx.gate.waiting() === 0 && ctx.queue.running === ctx.gate.held()
+}
+
+/**
  * One poll: retry undelivered outcomes, renew the claims of the sets in
  * flight, then claim + start one request if a job slot is free. Returns what
  * it did (for tests / logs).
@@ -201,7 +212,7 @@ export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: 
       .catch((e: any) => log('warn', 'tracked: could not renew the claim', { jobId: job.id, requestId: job.meta!.requestId, err: String(e?.message || e) }))
   }
 
-  if (!ctx.queue.hasFreeSlot) return { action: 'busy' }
+  if (!canClaim(ctx)) return { action: 'busy' }
   // Staggered deploys: a tracked from before verified lists hands out
   // unverified ones and counts every refusal as a used attempt (three and the
   // request is parked as failed). So the scene style claims nothing until

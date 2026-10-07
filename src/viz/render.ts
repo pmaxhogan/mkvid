@@ -706,7 +706,7 @@ export interface RenderSceneOptions {
   analyze?: (o: { input: VizInput; vizDir: string; ffmpegPath: string; onLog: (l: string) => void }) => Promise<PreparedAnalysis>
   /**
    * Runs each stage (analyse, render, assemble) of this job; the pipeline
-   * passes its stage gate so two jobs never run the same stage at once.
+   * passes its stage gate so no two jobs run the same stage at once.
    * Default: run it.
    */
   gate?: <T>(stage: 'analyse' | 'render' | 'assemble', fn: () => Promise<T>) => Promise<T>
