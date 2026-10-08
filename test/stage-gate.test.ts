@@ -33,6 +33,30 @@ describe('StageGate', () => {
     expect(gate.holder('render')).toBeNull()
   })
 
+  it('a stage with two slots runs two jobs at once and queues the third', async () => {
+    const gate = new StageGate({ upload: 2 })
+    expect(gate.slotsOf('upload')).toBe(2)
+    expect(gate.slotsOf('render')).toBe(1)
+    const releases: Record<string, () => void> = {}
+    const waits: string[][] = []
+    const up = (job: string) => gate.run('upload', job, () => new Promise<void>((r) => { releases[job] = r }), (h) => waits.push(h))
+    const a = up('a'); const b = up('b')
+    expect(gate.holders('upload')).toEqual(['a', 'b'])
+    expect(gate.hasRoom('upload')).toBe(false)
+    expect(gate.held()).toBe(2) // jobs holding a stage, not stages held
+    const c = up('c')
+    await tick()
+    expect(waits).toEqual([['a', 'b']])
+    expect(gate.waitingFor('c')).toBe('upload')
+    releases.b!(); await b; await tick()
+    expect(gate.holders('upload')).toEqual(['a', 'c'])
+    expect(gate.waiting()).toBe(0)
+    releases.a!(); releases.c!()
+    await Promise.all([a, c])
+    expect(gate.holders('upload')).toEqual([])
+    expect(gate.hasRoom('upload')).toBe(true)
+  })
+
   it('frees the stage when the holder throws', async () => {
     const gate = new StageGate()
     await expect(gate.run('render', 'a', async () => { throw new Error('boom') })).rejects.toThrow('boom')

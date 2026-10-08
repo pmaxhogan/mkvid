@@ -58,6 +58,17 @@ function tokens() {
 const base = { title: 't', description: 'd', privacy: 'private' as const, categoryId: '10', chunkBytes: KB256, retryDelayMs: () => 0 }
 
 describe('uploadVideo (resumable)', () => {
+  it('reports throughput every throughputEveryMs while bytes flow', async () => {
+    const file = video(KB256 * 3)
+    const yt = fakeYouTube([session, () => resume(KB256 - 1), () => resume(2 * KB256 - 1), () => done('abc')])
+    let clock = 0
+    const now = () => { clock += 1000; return clock } // one second per look at the clock
+    const samples: unknown[] = []
+    await uploadVideo({ ...base, getToken: tokens().getToken, filePath: file, fetch: yt.fetchFn, now, throughputEveryMs: 1500, onThroughput: (s) => samples.push(s) }, () => {})
+    // Started at t=1 s; chunk 1 lands at t=2 s (too soon), chunk 2 at t=3 s (2 s in: a sample).
+    expect(samples).toEqual([{ heldBytes: 2 * KB256, totalBytes: 3 * KB256, intervalBytes: 2 * KB256, intervalSeconds: 2, elapsedSeconds: 2 }])
+  })
+
   it('opens a session and sends the file in 256 KiB-aligned chunks', async () => {
     const file = video(KB256 * 2 + 100)
     const yt = fakeYouTube([session, () => resume(KB256 - 1), () => resume(2 * KB256 - 1), () => done('abc', 'unlisted')])

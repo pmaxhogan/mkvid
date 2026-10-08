@@ -334,8 +334,11 @@ describe('tracked retries adopt the kept work', () => {
 })
 
 describe('several jobs in flight', () => {
-  it('all start at once (no job limit), never two in the same stage', async () => {
-    const { ctx, uploadJob } = setup()
+  it.each([
+    ['1', 1],
+    [undefined, 2],
+  ] as const)('all start at once (no job limit), never two in the same stage but upload (UPLOAD_CONCURRENCY=%s: %i)', async (env, uploads) => {
+    const { ctx, uploadJob } = setup(env ? { UPLOAD_CONCURRENCY: env } : {})
     for (const id of ['a', 'b', 'c']) uploadJob(id)
     // Long enough for the other job to catch up with this one.
     h.renderHold = () => new Promise((r) => setTimeout(r, 40))
@@ -353,7 +356,11 @@ describe('several jobs in flight', () => {
       most[stage] = Math.max(most[stage], inStage[stage])
       if (inStage.render && inStage.upload) overlapped = true
     }
-    expect(most).toEqual({ render: 1, upload: 1 })
+    expect(most).toEqual({ render: 1, upload: uploads })
+    // Every upload logs its throughput and how many ran beside it at the peak.
+    const summaries = ['a', 'b', 'c'].map((id) => ctx.jobs.getLogs(id, 100).find((l) => /^upload: [\d.]+ GB in \d+ s = [\d.]+ MB\/s \(primary; \d upload\(s\) at once at the peak, \d on primary\)$/.test(l)))
+    expect(summaries.every(Boolean)).toBe(true)
+    expect(Math.max(...summaries.map((l) => Number(/; (\d) upload/.exec(l!)![1])))).toBe(uploads)
     expect(overlapped).toBe(true)
     // The job that waited for the render slot says so in its log.
     expect(ctx.jobs.getLogs('b', 50).some((l) => /^waiting for the render stage: "a" is in it$/.test(l))).toBe(true)

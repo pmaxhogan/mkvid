@@ -67,6 +67,12 @@ describe('getValidAccessToken', () => {
     expect(await getValidAccessToken(s, cfg, { force: true })).toBe('fresh-1')
     expect(s.saved!.refreshToken).toBe('r')
   })
+  it('two uploads asking at once share one refresh; a later ask after it settled refreshes again', async () => {
+    const s = store({ ...base, expiresAt: Date.now() + 3000_000 })
+    expect(await Promise.all([getValidAccessToken(s, cfg, { force: true }), getValidAccessToken(s, cfg, { force: true })])).toEqual(['fresh-1', 'fresh-1'])
+    expect(g.refreshes).toBe(1)
+    expect(await getValidAccessToken(s, cfg, { force: true })).toBe('fresh-2')
+  })
   it('no stored tokens: reconnect', async () => {
     await expect(getValidAccessToken(store(null), cfg)).rejects.toThrow('reconnect_youtube')
   })

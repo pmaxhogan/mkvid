@@ -16,12 +16,13 @@
  *   2. renew tracked's claim on every set queued or running here (`/mkvid/job`
  *      again): with several jobs in flight a set can wait for a stage,
  *      and a claim older than tracked's claim TTL is handed out again;
- *   3. if a new set could start downloading now (canClaim: download free and
- *      every job here holding a stage, one job per stage — see
- *      stage-gate.ts), claim one request, telling tracked which
- *      upload accounts (Google projects) currently have a connected YouTube
- *      token — it fills its own project's quota day first, then the sync's —
- *      and gets back the request stamped with the account to upload through;
+ *   3. if a new set could start downloading now (canClaim: download free,
+ *      every job here holding a stage, fewer sets waiting for upload than
+ *      upload slots — see stage-gate.ts), claim one request, telling tracked
+ *      which upload accounts (Google projects) currently have a connected
+ *      YouTube token — it fills its own project's quota day first, then the
+ *      sync's, unless TRACKED_SPREAD_ACCOUNTS names the one to prefer — and
+ *      gets back the request stamped with the account to upload through;
  *   4. resolve the source (hearthis embed → track page), probe its duration
  *      and refuse a recording shorter than the tracklist's last cue
  *      (`incomplete_recording`, permanent — a clip is not the set);
@@ -65,8 +66,11 @@ export interface TrackedRequest {
 }
 
 export interface TrackedClient {
-  /** `style` = the style tracked jobs are rendered with (TRACKED_STYLE); tracked refuses recreations unless it is scene. */
-  claim(accounts: readonly UploadAccount[], style?: string): Promise<TrackedRequest | null>
+  /**
+   * `style` = the style tracked jobs are rendered with (TRACKED_STYLE); tracked refuses recreations unless it is scene.
+   * `preferAccount` = upload through this account if it has claims left today (TRACKED_SPREAD_ACCOUNTS); an older tracked ignores it.
+   */
+  claim(accounts: readonly UploadAccount[], style?: string, preferAccount?: UploadAccount): Promise<TrackedRequest | null>
   job(id: string, jobId: string): Promise<void>
   complete(input: { id: string; videoId: string; videoUrl: string; privacy: string | null; jobId: string; style: string }): Promise<{ status: string }>
   fail(input: { id: string; error: string; permanent: boolean; jobId: string | null }): Promise<void>
@@ -93,8 +97,9 @@ export function makeTrackedClient(cfg: NonNullable<Config['tracked']>, fetcher: 
     return (text ? JSON.parse(text) : {}) as T
   }
   return {
-    async claim(accounts, style) {
-      return (await call<{ request: TrackedRequest | null }>('POST', '/mkvid/claim', style ? { accounts, style } : { accounts })).request
+    async claim(accounts, style, preferAccount) {
+      const body = { accounts, ...(style ? { style } : {}), ...(preferAccount ? { preferAccount } : {}) }
+      return (await call<{ request: TrackedRequest | null }>('POST', '/mkvid/claim', body)).request
     },
     async job(id, jobId) {
       await call('POST', '/mkvid/job', { id, jobId })
@@ -188,16 +193,40 @@ export async function reportJobToTracked(ctx: AppContext, job: Job, client: Trac
 /**
  * A claimed set could start downloading right away and would not queue behind
  * another on its way to render: download is free, no job waits for download,
- * analyse or render (a set waiting for upload or assemble is no reason to
- * idle the render slot), and every job in flight holds or waits for a stage
- * (none is between stages or not started yet). There is no job limit; this
- * keeps the sets here to about one per stage instead of claiming every
- * pending request and parking them at the render stage.
+ * analyse or render, fewer sets wait for upload than there are upload slots
+ * (UPLOAD_CONCURRENCY), and every job in flight holds or waits for a stage
+ * (none is between stages or not started yet). A set or two waiting for
+ * upload or assemble is no reason to idle the render slot, but a full batch of
+ * finished videos waiting for upload is: each is several GB on disk and a
+ * claim spent from tracked's daily cap, and retried sets whose video is
+ * already rendered go straight there. There is no job limit; this keeps the
+ * sets here to about one per stage slot instead of claiming every pending
+ * request and parking them in front of a stage.
  */
 export function canClaim(ctx: Pick<AppContext, 'queue' | 'gate'>): boolean {
   const g = ctx.gate
-  return ctx.queue.hasFreeSlot && g.holder('download') === null && g.waiting(CLAIM_BLOCKING_STAGES) === 0 &&
+  return ctx.queue.hasFreeSlot && g.hasRoom('download') && g.waiting(CLAIM_BLOCKING_STAGES) === 0 &&
+    g.waiting(['upload']) < g.slotsOf('upload') &&
     ctx.queue.running === g.held() + g.waiting()
+}
+
+/**
+ * TRACKED_SPREAD_ACCOUNTS: the connected account with the fewest sets in
+ * flight here, so the sets that reach the upload stage together tend to go
+ * through different Google projects (a throttle per project, if that is what
+ * slows uploads, then halves). On a tie, the one the newest set in flight
+ * does not use. Undefined (tracked's own fill order) with fewer than two
+ * connected accounts or nothing in flight.
+ */
+export function preferredAccount(connected: readonly UploadAccount[], inFlight: readonly Pick<Job, 'meta'>[]): UploadAccount | undefined {
+  if (connected.length < 2 || inFlight.length === 0) return undefined
+  const accountOf = (j: Pick<Job, 'meta'>): UploadAccount => j.meta?.account === 'shared' ? 'shared' : 'primary'
+  const count = (a: UploadAccount) => inFlight.filter((j) => accountOf(j) === a).length
+  const fewest = Math.min(...connected.map(count))
+  const tied = connected.filter((a) => count(a) === fewest)
+  if (tied.length === 1) return tied[0]
+  const newest = accountOf(inFlight[inFlight.length - 1]!)
+  return tied.find((a) => a !== newest)
 }
 const CLAIM_BLOCKING_STAGES = ['download', 'analyse', 'render'] as const
 
@@ -228,9 +257,10 @@ export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: 
     if (h.verifiedLists !== true) return { action: 'waiting_for_tracked' }
   }
   const accounts = ctx.connectedAccounts()
+  const prefer = cfg.spreadAccounts ? preferredAccount(accounts, inFlight) : undefined
   // Still poll with no accounts: tracked records the outcome so its panel can
   // say "reconnect YouTube on mkvid" instead of "mkvid is not polling".
-  const req = await client.claim(accounts, cfg.style)
+  const req = await client.claim(accounts, cfg.style, prefer)
   if (accounts.length === 0) return { action: 'not_connected' }
   if (!req) return { action: 'idle' }
   // Handed out again while a job here still has it (its claim lapsed before
@@ -244,7 +274,7 @@ export async function pollTracked(ctx: AppContext, client: TrackedClient, opts: 
   // Claimed again: a refusal saved for an earlier claim of this request is stale, and retrying it would reset a request that is now rendering.
   ctx.db.prepare('DELETE FROM tracked_refusals WHERE request_id = ?').run(req.id)
   const account: UploadAccount = req.account === 'shared' ? 'shared' : 'primary'
-  log('info', 'tracked: claimed', { requestId: req.id, slug: req.slug, setUrl: req.setUrl, source: req.source, attempt: req.attempts, account })
+  log('info', 'tracked: claimed', { requestId: req.id, slug: req.slug, setUrl: req.setUrl, source: req.source, attempt: req.attempts, account, ...(prefer ? { preferAccount: prefer } : {}) })
 
   // The scene style renders verified lists only: refuse before downloading
   // anything. Not permanent — tracked puts the request back to pending.
