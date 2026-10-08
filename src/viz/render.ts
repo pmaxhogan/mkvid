@@ -25,7 +25,7 @@ import { Worker } from 'node:worker_threads'
 import { spawn, execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { cpus } from 'node:os'
+import { defaultWorkerCount } from '../lib/cpu.js'
 import { promisify } from 'node:util'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import {
@@ -44,9 +44,7 @@ export const MANIFEST_VERSION = 1
 /** Share of the progress bar spent drawing; the rest is the assemble. */
 export const RENDER_SHARE = 0.97
 
-export function defaultWorkerCount(): number {
-  return Math.max(1, cpus().length - 2)
-}
+export { defaultWorkerCount }
 
 // ---------------------------------------------------------------------------
 // planning

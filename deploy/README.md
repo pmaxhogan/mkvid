@@ -86,6 +86,19 @@ GHCR auth from the mounted `/root/.docker/config.json` (from the one-time
    editing `/mnt/alpha/apps/mkvid/.env`, load it with a redeploy:
    `ssh mnmserver "sudo midclt call app.redeploy mkvid"` (re-reads the env_file).
 
+   **CPU priority.** mkvid may use every core but yields them: compose
+   `cpu_shares: 2` gives its cgroup `cpu.weight` 1 against 100 for every other
+   container, so a Postgres/MongoDB burst takes the CPU back at once, while idle
+   cores stay mkvid's. The entrypoint also runs node and all its threads and
+   children (drawing workers, ffmpeg, yt-dlp) at `nice 19` (`MKVID_NICE`,
+   `0` = off); nice only orders work inside the container, the weight is what
+   protects the other apps. No `cpuset`/`cpus` limit (it only caps spare CPU);
+   if one is ever set, `VIZ_WORKERS` defaults to the usable cores − 2 and is
+   clamped to them (`os.availableParallelism()` and cgroup `cpu.max`, not the
+   host count). Watchtower's recreate keeps these settings. Check:
+   `ssh mnmserver 'id=$(sudo docker inspect -f {{.Id}} mkvid); cat /sys/fs/cgroup/docker/$id/cpu.weight; sudo docker exec mkvid sh -c "for p in /proc/[0-9]*; do echo \$(cut -d\" \" -f19 \$p/stat) \$(cat \$p/comm); done"'`
+   (weight `1`; every process at `19`).
+
 10. **Verify:** open `https://mkvid.maxhogan.dev` → CF Access login → Connect
     YouTube → submit a short track → watch progress → confirm the private
     video + push notification.

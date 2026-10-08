@@ -7,6 +7,13 @@ services:
     env_file: [/mnt/alpha/apps/mkvid/.env]
     environment:
       DATA_DIR: /data
+    # CPU: every core, but only what nothing else wants. cpu_shares 2 is the
+    # lowest cgroup weight (cpu.weight 1 vs 100 for every other container), so
+    # under contention Postgres/MongoDB/etc. get ~99% and mkvid the rest; idle
+    # cores are still all mkvid's. No cpuset/cpus limit: it would only cap the
+    # spare CPU mkvid may use. The entrypoint also runs node at nice 19
+    # (MKVID_NICE). Drawing workers default to usable cores - 2 (10 here).
+    cpu_shares: 2
     volumes:
       - /mnt/alpha/apps/mkvid/data:/data
     labels:

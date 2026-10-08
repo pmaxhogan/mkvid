@@ -30,4 +30,15 @@ if [ "${FFMPEG_AUTOUPDATE:-0}" = "1" ]; then
   fi
 fi
 echo "entrypoint: ffmpeg=$FFMPEG_PATH yt-dlp=$YTDLP_PATH"
+
+# CPU priority: run node (and so every thread and child it starts — drawing
+# workers, ffmpeg, yt-dlp) at a low priority, MKVID_NICE (default 19, the
+# lowest; 0 = normal). Raising one's own niceness needs no privilege. This only
+# orders work inside the container; what keeps mkvid out of Postgres/MongoDB's
+# way is the container's low cgroup weight (compose `cpu_shares`).
+NICE="${MKVID_NICE:-19}"
+if [ "$NICE" != "0" ] && nice -n "$NICE" true 2>/dev/null; then
+  echo "entrypoint: nice $NICE"
+  exec nice -n "$NICE" "$@"
+fi
 exec "$@"

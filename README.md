@@ -111,7 +111,8 @@ and a timeline of the set. 1920x1080, 30 fps, H.264.
   artwork is downloaded into `$DATA_DIR/cache/artwork` (keyed by URL hash,
   images only, 15 MB cap). The set artwork is the source's thumbnail via yt-dlp.
 - **Segments.** The timeline is cut into `VIZ_SEGMENT_SECONDS` (60 s)
-  segments. `VIZ_WORKERS` threads draw frames and `VIZ_ENCODE_SESSIONS`
+  segments. `VIZ_WORKERS` threads (default usable cores − 2, clamped to the
+  usable cores) draw frames and `VIZ_ENCODE_SESSIONS`
   segments encode at once. Every drawing thread feeds every encoder, frame by
   frame. A segment is encoded to `seg-NNNNN.mp4.partial` and renamed once
   ffprobe has counted its frames. All segments of a job use one encoder

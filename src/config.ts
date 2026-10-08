@@ -1,4 +1,4 @@
-import { cpus } from 'node:os'
+import { clampWorkers, defaultWorkerCount } from './lib/cpu.js'
 import { join } from 'node:path'
 import { WAVE_STYLES, type Privacy, type WaveStyle } from './types.js'
 
@@ -30,7 +30,8 @@ export interface Config {
    */
   tracked: { url: string; token: string; pollSeconds: number; privacy: Privacy; style: WaveStyle } | null
   /**
-   * The `scene` style (src/viz). `workers` drawing threads (default cpus - 2),
+   * The `scene` style (src/viz). `workers` drawing threads (default usable cores - 2, never more than
+   * the usable cores: src/lib/cpu),
    * `encodeSessions` segment encodes at a time (= concurrent NVENC sessions;
    * consumer cards allow only a few), `segmentSeconds` per resumable segment.
    */
@@ -116,7 +117,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     viz: {
       size: /^\d+x\d+$/.test(env.VIZ_SIZE || '') ? env.VIZ_SIZE! : '1920x1080',
       fps: positiveInt(env.VIZ_FPS, 30),
-      workers: positiveInt(env.VIZ_WORKERS, Math.max(1, cpus().length - 2)),
+      workers: clampWorkers(positiveInt(env.VIZ_WORKERS, defaultWorkerCount())),
       encodeSessions: positiveInt(env.VIZ_ENCODE_SESSIONS, 2),
       segmentSeconds: positiveInt(env.VIZ_SEGMENT_SECONDS, 60),
       artworkCacheDir: join(dataDir, 'cache', 'artwork'),
