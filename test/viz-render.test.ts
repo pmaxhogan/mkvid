@@ -384,7 +384,7 @@ describe('restart recovery', () => {
     expect(claimSceneResume(job, wd, 2)).toBe(true)
     expect(claimSceneResume(job, wd, 2)).toBe(false)
     expect(claimSceneResume({ ...job, style: 'static' }, wd, 9)).toBe(false)
-    expect(readSourceRecord(wd)).toEqual({ file: join(wd, 'a.opus'), title: 'a' })
+    expect(readSourceRecord(wd)).toEqual({ file: join(wd, 'a.opus'), title: 'a', pageUrl: null })
   })
 
   it('claimSceneResume only counts restarts without progress: a long render survives many image updates', () => {

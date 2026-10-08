@@ -14,20 +14,10 @@ import { uploadVideo, addToPlaylist, type TokenGetter } from './youtube.js'
 import { sendPush } from './push.js'
 import { UPLOAD_PREFIX, sanitizeUploadName } from './upload.js'
 import { log } from './log.js'
+import { describeJob } from './describe.js'
 import type { GateStage } from './stage-gate.js'
 
-/** Video description: where the audio came from, and for tracked jobs the set page it belongs to. */
-export function describeJob(job: Pick<Job, 'url' | 'meta'>): string {
-  if (job.meta?.origin === 'tracked') {
-    return [
-      `Tracklist: ${job.meta.setUrl}`,
-      `Recording: ${job.meta.sourceUrl}`,
-      '',
-      'Rendered by mkvid for tracked — the set has no YouTube recording on 1001tracklists, so this is its SoundCloud / hearthis.at recording with a waveform.',
-    ].join('\n')
-  }
-  return job.url.startsWith(UPLOAD_PREFIX) ? 'Uploaded by mkvid' : `Uploaded by mkvid from ${job.url}`
-}
+export { describeJob, recordingLink } from './describe.js'
 
 // ---------------------------------------------------------------------------
 // scene style: resumable state in <workDir>/viz
@@ -40,16 +30,17 @@ export function describeJob(job: Pick<Job, 'url' | 'meta'>): string {
  */
 export const VIZ_DIR = 'viz'
 
-interface SourceRecord { file: string; title: string; size: number }
+interface SourceRecord { file: string; title: string; size: number; pageUrl?: string | null }
 
-/** The downloaded audio of a scene job, recorded so a resumed job can skip the download. */
-export function readSourceRecord(workDir: string): { file: string; title: string } | null {
+/** The downloaded audio of a scene job, recorded so a resumed job (or a retry adopting its work) can skip the download. */
+export function readSourceRecord(workDir: string): { file: string; title: string; pageUrl: string | null } | null {
   try {
     const r = JSON.parse(readFileSync(join(workDir, VIZ_DIR, 'source.json'), 'utf8')) as SourceRecord
     // A bare file name inside the work dir, still the same size as when it was downloaded.
     if (typeof r.file !== 'string' || r.file !== basename(r.file) || typeof r.title !== 'string') return null
     const file = join(workDir, r.file)
-    return statSync(file).size === r.size ? { file, title: r.title } : null
+    const pageUrl = typeof r.pageUrl === 'string' && r.pageUrl ? r.pageUrl : null
+    return statSync(file).size === r.size ? { file, title: r.title, pageUrl } : null
   } catch {
     return null
   }
@@ -60,9 +51,9 @@ function writeJson(file: string, value: unknown): void {
   renameSync(file + '.tmp', file)
 }
 
-export function writeSourceRecord(workDir: string, file: string, title: string): void {
+export function writeSourceRecord(workDir: string, file: string, title: string, pageUrl: string | null = null): void {
   mkdirSync(join(workDir, VIZ_DIR), { recursive: true })
-  writeJson(join(workDir, VIZ_DIR, 'source.json'), { file: basename(file), title, size: statSync(file).size } satisfies SourceRecord)
+  writeJson(join(workDir, VIZ_DIR, 'source.json'), { file: basename(file), title, size: statSync(file).size, pageUrl } satisfies SourceRecord)
 }
 
 /**
@@ -347,9 +338,10 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
     // 1. download (or pick up a directly-uploaded file already in workDir)
     setStatus('downloading')
     let file: string, title: string
+    let pageUrl: string | null = null
     const resumed = job.style === 'scene' ? readSourceRecord(workDir) : null
     if (resumed) {
-      ({ file, title } = resumed)
+      ({ file, title, pageUrl } = resumed)
       logLine(`resuming after a restart: audio ${basename(file)} is already here`)
       emit({ type: 'progress', phase: 'download', percent: 100 })
     } else if (job.url.startsWith(UPLOAD_PREFIX)) {
@@ -363,12 +355,17 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
       logLine(`using uploaded file ${name}`)
       emit({ type: 'progress', phase: 'download', percent: 100 })
     } else {
-      ({ file, title } = await gated('download', () => downloadAudio(
+      ({ file, title, pageUrl } = await gated('download', () => downloadAudio(
         { ytdlpPath: config.ytdlpPath, url: job.url, workDir },
         (p) => emit({ type: 'progress', phase: 'download', percent: p }), logLine,
       )))
     }
-    if (job.style === 'scene' && !resumed) writeSourceRecord(workDir, file, title)
+    if (job.style === 'scene' && !resumed) writeSourceRecord(workDir, file, title, pageUrl)
+    // The recording's page goes in the description; kept on the job for the description backfill too.
+    if (pageUrl && job.meta && job.meta.recordingUrl !== pageUrl) {
+      const current = jobs.get(jobId)?.meta ?? job.meta
+      jobs.setMeta(jobId, { ...current, recordingUrl: pageUrl })
+    }
     const finalTitle = job.title || title
     jobs.setTitle(jobId, finalTitle)
 
@@ -408,7 +405,7 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
       return uploadVideo(
         {
           getToken, filePath: outFile, title: finalTitle,
-          description: describeJob(job),
+          description: describeJob(job, pageUrl),
           privacy: job.privacy, categoryId: config.youtubeCategoryId, onLog: logLine,
         },
         (p) => emit({ type: 'progress', phase: 'upload', percent: p }),

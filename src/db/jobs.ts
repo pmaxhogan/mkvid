@@ -78,6 +78,20 @@ export function makeJobsRepo(db: Database.Database) {
     markVideoDeleted(id: string) {
       db.prepare('UPDATE jobs SET video_deleted_at=@d, updated_at=@t WHERE id=@id').run({ id, d: now(), t: now() })
     },
+    /**
+     * tracked uploads still on YouTube whose description the backfill has not
+     * brought up to date yet, oldest first. `shared` = uploaded through the
+     * shared account; everything else went through the primary.
+     */
+    descriptionBackfillPending(account: 'primary' | 'shared'): Job[] {
+      return (db.prepare(`SELECT * FROM jobs WHERE status='done' AND video_id IS NOT NULL AND video_deleted_at IS NULL
+        AND description_synced_at IS NULL AND meta IS NOT NULL AND json_extract(meta, '$.origin')='tracked'
+        AND (CASE WHEN json_extract(meta, '$.account')='shared' THEN 'shared' ELSE 'primary' END)=?
+        ORDER BY created_at ASC`).all(account) as any[]).map(row)
+    },
+    markDescriptionSynced(id: string) {
+      db.prepare('UPDATE jobs SET description_synced_at=@d WHERE id=@id').run({ id, d: now() })
+    },
     setTitle(id: string, title: string) {
       db.prepare('UPDATE jobs SET title=@ti, updated_at=@t WHERE id=@id').run({ id, ti: title, t: now() })
     },

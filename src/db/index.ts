@@ -66,6 +66,8 @@ export function migrate(db: Database.Database): void {
   db.exec('CREATE TABLE IF NOT EXISTS tracked_refusals (request_id TEXT PRIMARY KEY, error TEXT NOT NULL, created_at INTEGER NOT NULL)')
   addColumn(db, 'jobs', 'video_deleted_at', 'INTEGER')  // epoch ms mkvid deleted the upload from YouTube
   db.exec('CREATE INDEX IF NOT EXISTS jobs_video_id ON jobs (video_id)')
+  // When the description backfill (lib/description-backfill.ts) found the upload's YouTube description current.
+  addColumn(db, 'jobs', 'description_synced_at', 'INTEGER')
 }
 
 /** Adds the column when missing; true when it did (a fresh migration step). */
