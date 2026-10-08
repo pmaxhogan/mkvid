@@ -52,6 +52,12 @@ export interface JobMeta {
   setUrl: string
   /** The recording as tracked found it (the yt-dlp URL may differ after resolution). */
   sourceUrl: string
+  /**
+   * The recording's page as yt-dlp named it (`webpage_url`): a link a
+   * listener can open (`soundcloud.com/<user>/<track>`) where sourceUrl is an
+   * API URL. Recorded at download; absent on jobs from before.
+   */
+  recordingUrl?: string
   /** Last cue on the tracklist; a recording shorter than this is a clip, not the set. */
   lastCueSeconds: number | null
   artistName: string | null

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { readdirSync } from 'node:fs'
+import { readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join, basename, extname } from 'node:path'
 
 export function parseDownloadPercent(line: string): number | null {
@@ -40,12 +40,61 @@ export function probeDuration(opts: { ytdlpPath: string; url: string; timeoutMs?
   })
 }
 
+/**
+ * Where downloadAudio has yt-dlp write the recording's page URL: a
+ * subdirectory, never the work dir itself, whose first file is taken as the
+ * download (pickDownloadedFile skips directories).
+ */
+export const PAGE_URL_FILE = join('ytdlp', 'webpage_url.txt')
+
+/**
+ * The page a listener can open for this recording, from yt-dlp's
+ * `webpage_url`: `https://soundcloud.com/<user>/<track>` for an
+ * `api.soundcloud.com/tracks/<id>` URL, the track page for hearthis.at. Null
+ * when it is missing or not an http(s) URL.
+ */
+export function parsePageUrl(text: string): string | null {
+  const line = text.split('\n').map((l) => l.trim()).filter(Boolean).pop() ?? ''
+  try {
+    const u = new URL(line)
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.toString() : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Ask yt-dlp for a recording's page URL without downloading anything (the
+ * description backfill: uploads from before downloadAudio recorded it).
+ */
+export function probePageUrl(opts: { ytdlpPath: string; url: string; timeoutMs?: number }): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    const args = ['--no-playlist', '--simulate', '--print', 'webpage_url', '--', opts.url]
+    const p = spawn(opts.ytdlpPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    let err = ''
+    const timer = setTimeout(() => p.kill(), opts.timeoutMs ?? 60_000)
+    p.stdout.on('data', (c) => { out += c.toString() })
+    p.stderr.on('data', (c) => { err += c.toString() })
+    p.on('error', (e) => { clearTimeout(timer); reject(e) })
+    p.on('close', (code) => {
+      clearTimeout(timer)
+      if (code !== 0) return reject(new Error(`yt-dlp exit ${code}: ${err.slice(-500)}`))
+      resolve(parsePageUrl(out))
+    })
+  })
+}
+
 export function downloadAudio(
   opts: { ytdlpPath: string; url: string; workDir: string },
   onProgress: (p: number) => void, onLog: (l: string) => void,
-): Promise<{ file: string; title: string }> {
+): Promise<{ file: string; title: string; pageUrl: string | null }> {
   return new Promise((resolve, reject) => {
+    const pageFile = join(opts.workDir, PAGE_URL_FILE)
+    rmSync(pageFile, { force: true })
+    // --print-to-file (unlike --print) neither silences progress nor turns the download into a simulation.
     const args = ['--no-playlist', '--newline', '-f', 'bestaudio/best',
+      '--print-to-file', 'after_move:webpage_url', pageFile,
       '-o', join(opts.workDir, '%(title)s.%(ext)s'), '--', opts.url]
     const p = spawn(opts.ytdlpPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let err = ''
@@ -63,7 +112,9 @@ export function downloadAudio(
       if (code !== 0) return reject(new Error(`yt-dlp exit ${code}: ${err.slice(-2000)}`))
       const picked = pickDownloadedFile(opts.workDir)
       if (!picked) return reject(new Error('yt-dlp produced no audio file'))
-      resolve(picked)
+      let pageUrl: string | null = null
+      try { pageUrl = parsePageUrl(readFileSync(pageFile, 'utf8')) } catch { /* not written: no page URL */ }
+      resolve({ ...picked, pageUrl })
     })
   })
 }
