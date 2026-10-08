@@ -29,7 +29,7 @@ import type { TrackedTrack } from '../types.js'
 import { probeAudio } from '../lib/probe.js'
 import { vizTracksFromTracked, fetchArtwork } from './assets.js'
 import {
-  planSegments, renderSegments, assemble, chooseEncoder, defaultWorkerCount, verifyDuration, colourSelfTest,
+  planSegments, renderSegments, assemble, chooseEncoder, defaultWorkerCount, verifyDuration, colourSelfTest, VIZ_AUDIO_ARGS,
   type SegmentInfo, type VizEncoder,
 } from './render.js'
 
@@ -191,7 +191,7 @@ async function main(): Promise<void> {
     // 4. mux the matching audio window
     const winSeconds = (f1 - f0) / fps
     await assemble({
-      dir: work, segments, infos, audioPath, audioArgs: ['-c:a', 'aac', '-b:a', '192k'], outFile, ffmpegPath,
+      dir: work, segments, infos, audioPath, audioArgs: [...VIZ_AUDIO_ARGS], outFile, ffmpegPath,
       audioStart: f0 / fps, audioDuration: winSeconds,
     })
     await verifyDuration(ffprobePath, outFile, Math.min(winSeconds, duration - f0 / fps), fps)

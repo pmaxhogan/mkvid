@@ -3,7 +3,7 @@ import { join, basename, extname } from 'node:path'
 import type { AppContext } from '../context.js'
 import type { Job, SseMessage, UploadAccount } from '../types.js'
 import type { VizInput } from '../viz/types.js'
-import { renderScene, hashInput, legacyHashInput, rebasePath, rebaseVizInput, readManifest, writeManifest, sceneCodeVersion } from '../viz/render.js'
+import { renderScene, hashInput, legacyHashInput, rebasePath, rebaseVizInput, readManifest, writeManifest, sceneCodeVersion, VIZ_AUDIO_ARGS } from '../viz/render.js'
 import { downloadSetArtwork, resolveVizTracks, vizTracksFromTracked } from '../viz/assets.js'
 import { unverifiedTrackedScene } from './tracked.js'
 import { downloadAudio } from './ytdlp.js'
@@ -369,7 +369,7 @@ async function renderSceneForJob(
   } catch { /* none */ }
   rmSync(join(vizDir, RENDERED_FILE), { force: true })
   await renderScene({
-    input, vizDir, outFile: a.outFile, audioArgs: chooseAudioArgs(a.codec),
+    input, vizDir, outFile: a.outFile, audioArgs: [...VIZ_AUDIO_ARGS],
     ffmpegPath: config.ffmpegPath, ffprobePath: config.ffprobePath,
     workers: config.viz.workers, encodeSessions: config.viz.encodeSessions, segmentSeconds: config.viz.segmentSeconds,
     // Free space is checked once this job holds the render slot: the other job's segments are on the same volume.

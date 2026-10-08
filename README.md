@@ -121,9 +121,14 @@ and a timeline of the set. 1920x1080, 30 fps, H.264.
   ffprobe has counted its frames. All segments of a job use one encoder
   (NVENC when it opens, else libx264): segments from two encoders cannot be
   joined by stream copy.
-- **Assemble.** Concat demuxer (stream copy), audio as for the other styles
-  (copy aac/mp3/alac, else AAC 192k), `+faststart`. The duration is checked
-  against the audio.
+- **Encoding.** YouTube's recommended 1080p30 upload settings: H.264 High,
+  CABAC, 2 B-frames, VBR 8 Mbps (max 12M, buffer 16M), closed GOP of half the
+  frame rate (15 at 30 fps), 4:2:0 BT.709. NVENC `-preset p6 -tune hq
+  -spatial-aq 1`; libx264 `-preset medium` with the same rate settings.
+- **Assemble.** Concat demuxer (stream copy), audio re-encoded to AAC-LC
+  192k stereo 48 kHz, `+faststart`, no edit lists (`-use_editlist 0`, B-frame
+  delay as negative composition offsets). The duration is checked against the
+  audio.
 - **Resume.** `work/<job>/viz/manifest.json` records the input fingerprint:
   audio size and mtime, size, fps, segment length, the hash of the scene input
   (titles, tracks, artwork bytes), the hash of the scene/analysis code and
