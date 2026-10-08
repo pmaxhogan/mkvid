@@ -15,6 +15,17 @@ const h = vi.hoisted(() => ({
   events: [] as string[],
   renderHold: null as null | (() => Promise<void>),
   uploadHold: null as null | (() => Promise<void>),
+  /** downloadSetArtwork finds a picture (written into the job's viz dir, like the real one). */
+  setArt: false,
+}))
+vi.mock('../src/viz/assets.js', async (orig) => ({
+  ...(await orig<typeof import('../src/viz/assets.js')>()),
+  downloadSetArtwork: vi.fn(async (o: { outDir: string }) => {
+    if (!h.setArt) return null
+    mkdirSync(o.outDir, { recursive: true })
+    writeFileSync(join(o.outDir, 'set-artwork.jpg'), 'set picture')
+    return join(o.outDir, 'set-artwork.jpg')
+  }),
 }))
 vi.mock('../src/viz/render.js', async (orig) => ({
   ...(await orig<typeof import('../src/viz/render.js')>()),
@@ -83,7 +94,7 @@ function setup(env: Record<string, string> = {}) {
 beforeEach(() => {
   h.render.length = 0; h.renderCalls.length = 0; h.upload.length = 0; h.uploadCalls = 0
   h.staticRender.mockClear()
-  h.events.length = 0; h.renderHold = null; h.uploadHold = null
+  h.events.length = 0; h.renderHold = null; h.uploadHold = null; h.setArt = false
 })
 
 describe('scene render failures', () => {
@@ -280,6 +291,27 @@ describe('tracked retries adopt the kept work', () => {
     expect(logs).toMatch(/resuming after a restart: audio set\.m4a is already here/)
     expect(h.renderCalls).toHaveLength(1)
     expect(existsSync(s.work('first'))).toBe(false)
+  })
+
+  it('with set artwork in the kept dir, the retry still reuses the finished video (paths follow the rename)', async () => {
+    const s = setup()
+    h.setArt = true
+    await failFirst(s, meta(T))
+    const firstInput = JSON.parse(readFileSync(join(s.work('first'), 'viz', 'input.json'), 'utf8'))
+    expect(firstInput.setArtworkPath).toBe(join(s.work('first'), 'viz', 'set-artwork.jpg'))
+    s.ctx.jobs.create({ id: 'second', url: 'https://sc/x', title: 'x', privacy: 'private', style: 'scene', meta: meta(T) })
+    let input: any = null
+    h.uploadHold = async () => { input = JSON.parse(readFileSync(join(s.work('second'), 'viz', 'input.json'), 'utf8')) }
+    await runJob(s.ctx, 'second')
+    expect(s.ctx.jobs.get('second')!.status).toBe('done')
+    const logs = s.ctx.jobs.getLogs('second', 100).join('\n')
+    expect(logs).toMatch(/reusing the kept work of failed job first/)
+    expect(logs).toMatch(/viz: resuming with the saved track list and artwork/)
+    expect(logs).toMatch(/out\.mp4 from an earlier attempt is complete, skipping the render/)
+    expect(h.renderCalls).toHaveLength(1) // only the first job rendered
+    expect(h.uploadCalls).toBe(2)
+    expect(input.audioPath).toBe(join(s.work('second'), 'set.m4a'))
+    expect(input.setArtworkPath).toBe(join(s.work('second'), 'viz', 'set-artwork.jpg'))
   })
 
   it('a changed track list rebuilds the scene input (and so renders again)', async () => {

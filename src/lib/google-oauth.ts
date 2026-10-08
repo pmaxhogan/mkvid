@@ -50,14 +50,26 @@ export async function exchangeCode(cfg: Config['google'], code: string): Promise
   }
 }
 
-export function needsRefresh(tokens: StoredTokens, now: number): boolean {
-  return tokens.expiresAt - now < 60_000
+/** A token that must stay valid this much longer is refreshed now. */
+export const DEFAULT_MIN_VALID_MS = 60_000
+/** Before an upload starts: a whole fresh token (they last an hour). */
+export const UPLOAD_MIN_VALID_MS = 55 * 60_000
+
+export interface TokenOptions {
+  /** Refresh unless the stored token is valid at least this much longer (default 60 s). */
+  minValidMs?: number
+  /** Mint a new token whatever the stored one says (YouTube just answered 401). */
+  force?: boolean
 }
 
-export async function getValidAccessToken(store: TokenStore, cfg: Config['google']): Promise<string> {
+export function needsRefresh(tokens: StoredTokens, now: number, minValidMs = DEFAULT_MIN_VALID_MS): boolean {
+  return tokens.expiresAt - now < minValidMs
+}
+
+export async function getValidAccessToken(store: TokenStore, cfg: Config['google'], opts: TokenOptions = {}): Promise<string> {
   const tokens = store.load()
   if (!tokens) throw new Error('reconnect_youtube')
-  if (!needsRefresh(tokens, Date.now())) return tokens.accessToken
+  if (!opts.force && !needsRefresh(tokens, Date.now(), opts.minValidMs)) return tokens.accessToken
   const client = makeOAuthClient(cfg)
   client.setCredentials({ refresh_token: tokens.refreshToken })
   try {

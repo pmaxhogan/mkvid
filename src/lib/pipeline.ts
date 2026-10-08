@@ -3,14 +3,14 @@ import { join, basename, extname } from 'node:path'
 import type { AppContext } from '../context.js'
 import type { Job, SseMessage } from '../types.js'
 import type { VizInput } from '../viz/types.js'
-import { renderScene, hashInput, sceneCodeVersion } from '../viz/render.js'
+import { renderScene, hashInput, legacyHashInput, rebasePath, rebaseVizInput, readManifest, writeManifest, sceneCodeVersion } from '../viz/render.js'
 import { downloadSetArtwork, resolveVizTracks, vizTracksFromTracked } from '../viz/assets.js'
 import { unverifiedTrackedScene } from './tracked.js'
 import { downloadAudio } from './ytdlp.js'
 import { probeAudio } from './probe.js'
 import { chooseFps, chooseAudioArgs, renderVideo } from './ffmpeg.js'
-import { getValidAccessToken } from './google-oauth.js'
-import { uploadVideo, addToPlaylist } from './youtube.js'
+import { getValidAccessToken, UPLOAD_MIN_VALID_MS } from './google-oauth.js'
+import { uploadVideo, addToPlaylist, type TokenGetter } from './youtube.js'
 import { sendPush } from './push.js'
 import { UPLOAD_PREFIX, sanitizeUploadName } from './upload.js'
 import { log } from './log.js'
@@ -92,7 +92,7 @@ export function claimSceneResume(job: Job, workDir: string, maxResumes: number):
 }
 
 /** The scene's input as first resolved: reused on resume so a flaky artwork download cannot change the pixels. */
-function loadVizInput(vizDir: string, audioPath: string): VizInput | null {
+export function loadVizInput(vizDir: string, audioPath: string): VizInput | null {
   try {
     const input = JSON.parse(readFileSync(join(vizDir, 'input.json'), 'utf8')) as VizInput
     if (input.audioPath !== audioPath) return null
@@ -126,6 +126,36 @@ export function ensureFreeSpace(dir: string, minGb: number, free: (d: string) =>
 
 const KEPT_FILE = 'kept.json'
 const RENDERED_FILE = 'rendered.json'
+
+/**
+ * Stamps (manifest fingerprint, rendered.json) written with an input hash
+ * from before hashInput left paths out are moved to the current hash, so an
+ * upgrade does not throw away finished segments or a finished out.mp4.
+ */
+export function migrateInputStamps(vizDir: string, legacyHash: string, currentHash: string): void {
+  if (legacyHash === currentHash) return
+  const m = readManifest(vizDir)
+  if (m && m.fingerprint.inputHash === legacyHash) writeManifest(vizDir, { ...m, fingerprint: { ...m.fingerprint, inputHash: currentHash } })
+  try {
+    const file = join(vizDir, RENDERED_FILE)
+    const r = JSON.parse(readFileSync(file, 'utf8'))
+    if (r?.inputHash === legacyHash) writeJson(file, { ...r, inputHash: currentHash })
+  } catch { /* none */ }
+}
+
+/**
+ * A kept work dir was renamed from `oldDir` to `workDir`: point the saved
+ * scene input (audio, set artwork in viz/) at the new dir, so loadVizInput
+ * takes it and its hash (hence the segments and out.mp4) still matches.
+ */
+export function rebaseKeptInput(oldDir: string, workDir: string): void {
+  const file = join(workDir, VIZ_DIR, 'input.json')
+  let stored: VizInput
+  try { stored = JSON.parse(readFileSync(file, 'utf8')) as VizInput } catch { return }
+  const moved = rebaseVizInput(stored, oldDir, workDir)
+  migrateInputStamps(join(workDir, VIZ_DIR), legacyHashInput(stored, (p) => rebasePath(p, oldDir, workDir)), hashInput(moved))
+  writeJson(file, moved)
+}
 
 /** Mark a failed scene job's work dir as kept for a retry (pruneKeptWork decides how long). */
 export function markKept(workDir: string, stage: string): void {
@@ -205,6 +235,7 @@ export function adoptKeptWork(ctx: AppContext, job: Job, workDir: string, logLin
     const sameTracks = JSON.stringify([old.meta?.tracks ?? null, old.meta?.tracksTrusted ?? null]) ===
       JSON.stringify([job.meta?.tracks ?? null, job.meta?.tracksTrusted ?? null])
     if (!sameTracks) rmSync(join(workDir, VIZ_DIR, 'input.json'), { force: true })
+    else rebaseKeptInput(oldDir, workDir)
     logLine(`reusing the kept work of failed job ${old.id}${sameTracks ? '' : ' (track list changed: scene input rebuilt)'}`)
     return true
   }
@@ -223,8 +254,10 @@ async function renderSceneForJob(
   const vizDir = join(a.workDir, VIZ_DIR)
   mkdirSync(vizDir, { recursive: true })
   let input = loadVizInput(vizDir, a.audioPath)
-  if (input) logLine('viz: resuming with the saved track list and artwork')
-  else input = await gated('analyse', async () => {
+  if (input) {
+    logLine('viz: resuming with the saved track list and artwork')
+    migrateInputStamps(vizDir, legacyHashInput(input), hashInput(input))
+  } else input = await gated('analyse', async () => {
     const [width, height] = config.viz.size.split('x').map(Number)
     const setArtworkPath = job.url.startsWith(UPLOAD_PREFIX)
       ? null
@@ -367,17 +400,19 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
     setStatus('uploading')
     // A tracked job names the Google project (account) it was handed out for; UI jobs use the primary.
     const acct = ctx.accountFor(job.meta?.account)
-    const { accessToken, videoId, videoUrl, privacyApplied } = await gated('upload', async () => {
-      const accessToken = await getValidAccessToken(acct.store, acct.google)
-      const uploaded = await uploadVideo(
+    const getToken: TokenGetter = (o) => getValidAccessToken(acct.store, acct.google, o)
+    const { videoId, videoUrl, privacyApplied } = await gated('upload', async () => {
+      // Start with a token good for most of an hour (fails fast if the account is disconnected);
+      // the upload takes a current token for every chunk after that.
+      await getToken({ minValidMs: UPLOAD_MIN_VALID_MS })
+      return uploadVideo(
         {
-          accessToken, filePath: outFile, title: finalTitle,
+          getToken, filePath: outFile, title: finalTitle,
           description: describeJob(job),
-          privacy: job.privacy, categoryId: config.youtubeCategoryId,
+          privacy: job.privacy, categoryId: config.youtubeCategoryId, onLog: logLine,
         },
         (p) => emit({ type: 'progress', phase: 'upload', percent: p }),
       )
-      return { accessToken, ...uploaded }
     })
     jobs.setResult(jobId, videoId, videoUrl, privacyApplied, job.style)
     stage = 'done'
@@ -390,7 +425,7 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
     // them, and paying 50 units here as well would be a waste.
     if (config.youtubePlaylistId && job.meta?.origin !== 'tracked') {
       try {
-        await addToPlaylist(accessToken, videoId, config.youtubePlaylistId)
+        await addToPlaylist(getToken, videoId, config.youtubePlaylistId)
         logLine(`added to playlist ${config.youtubePlaylistId}`)
       } catch (e: any) {
         logLine(`warning: could not add to playlist — ${String(e?.message || e).slice(0, 140)}`)

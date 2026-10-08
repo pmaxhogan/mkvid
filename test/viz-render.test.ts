@@ -1,17 +1,17 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, readFileSync, renameSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
   planSegments, frameCountFor, segmentFileName, buildSegmentArgs, buildAssembleArgs,
-  openManifest, readManifest, writeManifest, renderScene, renderSegments, colourSelfTest, hashInput, type VizFingerprint,
+  openManifest, readManifest, writeManifest, renderScene, renderSegments, colourSelfTest, hashInput, legacyHashInput, rebaseVizInput, type VizFingerprint,
 } from '../src/viz/render.js'
 import type { VizInput } from '../src/viz/types.js'
 import { loadConfig } from '../src/config.js'
 import { buildContext } from '../src/context.js'
-import { claimSceneResume, readSourceRecord, writeSourceRecord } from '../src/lib/pipeline.js'
+import { claimSceneResume, readSourceRecord, writeSourceRecord, loadVizInput, rebaseKeptInput, migrateInputStamps } from '../src/lib/pipeline.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'mkvid-viz-'))
 afterAll(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 5 }))
@@ -127,6 +127,61 @@ describe('manifest / resume', () => {
     expect(hashInput({ ...base, tracks: [base.tracks[0], { ...base.tracks[1], startSeconds: 1 }] })).not.toBe(h)
     expect(hashInput({ ...base, tracks: [base.tracks[0], { ...base.tracks[1], title: null }] })).not.toBe(h)
     expect(hashInput({ ...base, audioPath: '/elsewhere.m4a' })).toBe(h)
+  })
+  it('the input hash ignores where the artwork lives, but not its bytes', () => {
+    const d = mkdtempSync(join(tmp, 'art-'))
+    for (const [f, body] of [['a1.jpg', 'pic'], ['a2.jpg', 'pic'], ['b.jpg', 'other pic']]) writeFileSync(join(d, f), body)
+    const base: VizInput = {
+      audioPath: join(d, 'a.m4a'), durationSeconds: 60, setTitle: 'S', setArtist: null, setArtworkPath: join(d, 'a1.jpg'), width: 64, height: 36, fps: 30,
+      tracks: [{ startSeconds: 0, artist: 'A', title: 'a', artworkPath: join(d, 'a1.jpg') }],
+    }
+    const h = hashInput(base)
+    expect(hashInput({ ...base, setArtworkPath: join(d, 'a2.jpg') })).toBe(h)
+    expect(hashInput({ ...base, tracks: [{ ...base.tracks[0], artworkPath: join(d, 'a2.jpg') }] })).toBe(h)
+    expect(hashInput({ ...base, setArtworkPath: join(d, 'b.jpg') })).not.toBe(h)
+    expect(hashInput({ ...base, setArtworkPath: null })).not.toBe(h)
+    expect(hashInput(rebaseVizInput(base, d, join(tmp, 'elsewhere')))).not.toBe(h) // the files are not there: missing counts
+  })
+  it('a kept work dir renamed to the retry\'s id: the saved input follows it, and old stamps move to the new hash', () => {
+    const root = mkdtempSync(join(tmp, 'adopt-'))
+    const oldDir = join(root, 'old-job'); const newDir = join(root, 'new-job')
+    const artCache = mkdtempSync(join(tmp, 'artcache-'))
+    mkdirSync(join(oldDir, 'viz'), { recursive: true })
+    writeFileSync(join(oldDir, 'set.m4a'), 'audio')
+    writeFileSync(join(oldDir, 'viz', 'set-artwork.jpg'), 'set pic')
+    writeFileSync(join(artCache, 't1.jpg'), 'track pic')
+    const input: VizInput = {
+      audioPath: join(oldDir, 'set.m4a'), durationSeconds: 60, setTitle: 'S', setArtist: 'DJ',
+      setArtworkPath: join(oldDir, 'viz', 'set-artwork.jpg'), width: 64, height: 36, fps: 30,
+      tracks: [{ startSeconds: 0, artist: 'A', title: 'a', artworkPath: join(artCache, 't1.jpg') }],
+    }
+    writeFileSync(join(oldDir, 'viz', 'input.json'), JSON.stringify(input))
+    // Stamps as the previous version wrote them (paths in the hash).
+    const legacy = legacyHashInput(input)
+    expect(legacy).not.toBe(hashInput(input))
+    writeManifest(join(oldDir, 'viz'), { version: 1, fingerprint: { ...fp, inputHash: legacy }, segments: { 0: { frames: 1800, bytes: 5 } as any } })
+    writeFileSync(join(oldDir, 'viz', 'rendered.json'), JSON.stringify({ inputHash: legacy, sceneVersion: 'v', bytes: 18 }))
+
+    renameSync(oldDir, newDir)
+    expect(loadVizInput(join(newDir, 'viz'), join(newDir, 'set.m4a'))).toBeNull() // the bug: stored paths point at old-job
+    rebaseKeptInput(oldDir, newDir)
+    const loaded = loadVizInput(join(newDir, 'viz'), join(newDir, 'set.m4a'))
+    expect(loaded).not.toBeNull()
+    expect(loaded!.setArtworkPath).toBe(join(newDir, 'viz', 'set-artwork.jpg'))
+    expect(loaded!.tracks[0].artworkPath).toBe(join(artCache, 't1.jpg')) // the shared cache is not moved
+    expect(readManifest(join(newDir, 'viz'))!.fingerprint.inputHash).toBe(hashInput(loaded!))
+    expect(Object.keys(readManifest(join(newDir, 'viz'))!.segments)).toEqual(['0'])
+    expect(JSON.parse(readFileSync(join(newDir, 'viz', 'rendered.json'), 'utf8')).inputHash).toBe(hashInput(loaded!))
+  })
+  it('stamps from before the hash change are moved in place on a plain resume; other hashes are left alone', () => {
+    const d = mkdtempSync(join(tmp, 'stamps-'))
+    writeManifest(d, { version: 1, fingerprint: { ...fp, inputHash: 'old' }, segments: {} })
+    writeFileSync(join(d, 'rendered.json'), JSON.stringify({ inputHash: 'old', bytes: 1 }))
+    migrateInputStamps(d, 'unrelated', 'new')
+    expect(readManifest(d)!.fingerprint.inputHash).toBe('old')
+    migrateInputStamps(d, 'old', 'new')
+    expect(readManifest(d)!.fingerprint.inputHash).toBe('new')
+    expect(JSON.parse(readFileSync(join(d, 'rendered.json'), 'utf8')).inputHash).toBe('new')
   })
   it('an unreadable manifest starts over', () => {
     const d = dirWithTwoSegments()

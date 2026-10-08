@@ -225,15 +225,61 @@ export interface VizManifest {
   segments: Record<string, SegmentInfo>
 }
 
+/**
+ * Fingerprint of what the scene draws besides the audio. No path is hashed,
+ * only whether a picture is there and its bytes: a failed job's work dir is
+ * renamed to the retry's id (adoptKeptWork), and the set artwork lives in it,
+ * so a path would make the very same set look like new inputs.
+ */
 export function hashInput(input: VizInput): string {
-  const { audioPath: _audio, ...rest } = input
-  const h = createHash('sha256').update(JSON.stringify(rest))
-  // Artwork is referenced by path; hash the bytes so a replaced file counts as a change.
+  const { audioPath: _audio, setArtworkPath, tracks, ...rest } = input
+  const h = createHash('sha256').update(JSON.stringify({
+    ...rest,
+    setArtwork: !!setArtworkPath,
+    tracks: tracks.map(({ artworkPath, ...t }) => ({ ...t, artwork: !!artworkPath })),
+  }))
+  hashArtworkBytes(h, input, (p) => p)
+  return h.digest('hex')
+}
+
+function hashArtworkBytes(h: ReturnType<typeof createHash>, input: VizInput, read: (p: string) => string): void {
+  // Hash the bytes so a replaced file counts as a change.
   for (const p of [input.setArtworkPath, ...input.tracks.map((t) => t.artworkPath)]) {
     if (!p) continue
-    try { h.update(readFileSync(p)) } catch { h.update(`missing:${p}`) }
+    try { h.update(readFileSync(read(p))) } catch { h.update('missing') }
+  }
+}
+
+/**
+ * hashInput as it was before paths were left out (the path strings were
+ * hashed too). Only to recognise manifests and rendered.json stamps written
+ * by that version; `read` maps a stored path to where the file is now.
+ */
+export function legacyHashInput(input: VizInput, read: (p: string) => string = (p) => p): string {
+  const { audioPath: _audio, ...rest } = input
+  const h = createHash('sha256').update(JSON.stringify(rest))
+  for (const p of [input.setArtworkPath, ...input.tracks.map((t) => t.artworkPath)]) {
+    if (!p) continue
+    try { h.update(readFileSync(read(p))) } catch { h.update(`missing:${p}`) }
   }
   return h.digest('hex')
+}
+
+/** `p` moved from under `fromDir` to under `toDir`; any other path (the shared artwork cache) is left alone. */
+export function rebasePath(p: string, fromDir: string, toDir: string): string {
+  const from = fromDir.replace(/[\\/]+$/, '')
+  return p === from ? toDir : p.startsWith(from + '/') || p.startsWith(from + '\\') ? join(toDir, p.slice(from.length + 1)) : p
+}
+
+/** The scene input with every path under `fromDir` moved to `toDir` (a work dir renamed to another job's id). */
+export function rebaseVizInput(input: VizInput, fromDir: string, toDir: string): VizInput {
+  const r = (p: string | null) => (p ? rebasePath(p, fromDir, toDir) : p)
+  return {
+    ...input,
+    audioPath: rebasePath(input.audioPath, fromDir, toDir),
+    setArtworkPath: r(input.setArtworkPath),
+    tracks: input.tracks.map((t) => ({ ...t, artworkPath: r(t.artworkPath) })),
+  }
 }
 
 function hashTree(h: ReturnType<typeof createHash>, root: string, dir = root): void {
