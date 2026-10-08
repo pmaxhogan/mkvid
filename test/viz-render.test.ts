@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
-  planSegments, frameCountFor, segmentFileName, buildSegmentArgs, buildAssembleArgs,
+  planSegments, frameCountFor, segmentFileName, buildSegmentArgs, buildAssembleArgs, encodeSignature, VIZ_AUDIO_ARGS,
   openManifest, readManifest, writeManifest, renderScene, renderSegments, colourSelfTest, hashInput, legacyHashInput, rebaseVizInput, type VizFingerprint,
 } from '../src/viz/render.js'
 import type { VizInput } from '../src/viz/types.js'
@@ -61,14 +61,25 @@ describe('ffmpeg arguments', () => {
     const a = buildSegmentArgs({ width: 1920, height: 1080, fps: 30, encoder: 'x264', outFile: '/w/seg-00001.mp4.partial' })
     expect(a.join(' ')).toContain('-f rawvideo -pix_fmt rgba -s 1920x1080 -r 30 -i pipe:0 -an')
     expect(a.join(' ')).toContain('-c:v libx264')
-    expect(a.join(' ')).toContain('-g 60 -flags +cgop')
+    expect(a.join(' ')).toContain('-b:v 8M -maxrate 12M -bufsize 16M -profile:v high -coder 1 -bf 2')
+    expect(a.join(' ')).toContain('-g 15 -flags +cgop')
     expect(a.slice(-3)).toEqual(['-f', 'mp4', '/w/seg-00001.mp4.partial'])
     const n = buildSegmentArgs({ width: 1920, height: 1080, fps: 30, encoder: 'nvenc', outFile: 'x' })
-    expect(n).toContain('h264_nvenc')
+    expect(n.join(' ')).toContain('-c:v h264_nvenc -preset p6 -tune hq -rc vbr -b:v 8M -maxrate 12M -bufsize 16M')
+    expect(n.join(' ')).toContain('-profile:v high -coder cabac -bf 2 -g 15 -flags +cgop')
+    expect(n).not.toContain('-cq')
+  })
+  it('YouTube 1080p30 settings: closed GOP of half the frame rate, signature follows it', () => {
+    expect(buildSegmentArgs({ width: 64, height: 36, fps: 60, encoder: 'x264', outFile: 'x' }).join(' ')).toContain('-g 30 ')
+    expect(encodeSignature('nvenc', 30)).toMatch(/-b:v 8M .* -g 15$/)
+    expect(encodeSignature('nvenc', 30)).not.toBe(encodeSignature('nvenc', 60))
+    expect(VIZ_AUDIO_ARGS).toEqual(['-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2'])
   })
   it('assemble: stream-copied video, audio args as given, faststart; a window seeks the audio', () => {
     const a = buildAssembleArgs({ listFile: 'l.txt', audioPath: 'a.m4a', audioArgs: ['-c:a', 'copy'], outFile: 'o.mp4' })
-    expect(a.join(' ')).toContain('-f concat -safe 0 -i l.txt -i a.m4a -map 0:v:0 -map 1:a:0 -c:v copy -c:a copy -movflags +faststart')
+    expect(a.join(' ')).toContain('-f concat -safe 0 -i l.txt -i a.m4a -map 0:v:0 -map 1:a:0 -c:v copy -c:a copy')
+    // No edit lists, moov first.
+    expect(a.join(' ')).toContain('-use_editlist 0 -movflags +faststart+negative_cts_offsets -f mp4 o.mp4')
     const w = buildAssembleArgs({ listFile: 'l.txt', audioPath: 'a.m4a', audioArgs: ['-c:a', 'aac'], outFile: 'o.mp4', audioStart: 12.5, audioDuration: 20 })
     expect(w.join(' ')).toContain('-ss 12.500 -t 20.000 -i a.m4a')
   })

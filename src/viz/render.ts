@@ -83,20 +83,31 @@ const PARTIAL_RE = /^seg-\d{5}\.mp4\.partial$/
 // ---------------------------------------------------------------------------
 // ffmpeg arguments
 
-/** Quality settings for moving content: well above the old styles' cq 28 / crf 23. */
+/**
+ * YouTube's recommended upload settings for 1080p30 SDR: H.264 High, CABAC,
+ * 2 consecutive B-frames, VBR around 8 Mbps, closed GOP of half the frame rate
+ * (gopFor). The scene's film grain made cq 19 spend ~16 Mbps; a 30 s sample at
+ * 8M VBR measured SSIM 0.986 against that output (0.9886 for cq 19 re-encoded),
+ * half the bytes with no visible difference.
+ */
 const VIZ_ENC: Record<VizEncoder, readonly string[]> = {
-  nvenc: ['-c:v', 'h264_nvenc', '-preset', 'p6', '-tune', 'hq', '-rc', 'vbr', '-cq', '19', '-b:v', '0',
-    '-spatial-aq', '1', '-profile:v', 'high', '-bf', '2'],
-  x264: ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-profile:v', 'high'],
+  nvenc: ['-c:v', 'h264_nvenc', '-preset', 'p6', '-tune', 'hq', '-rc', 'vbr', '-b:v', '8M', '-maxrate', '12M', '-bufsize', '16M',
+    '-spatial-aq', '1', '-profile:v', 'high', '-coder', 'cabac', '-bf', '2'],
+  x264: ['-c:v', 'libx264', '-preset', 'medium', '-b:v', '8M', '-maxrate', '12M', '-bufsize', '16M',
+    '-profile:v', 'high', '-coder', '1', '-bf', '2'],
 }
+
+/** Audio of a scene video: AAC-LC stereo 48 kHz, as YouTube recommends (a 44.1 kHz source is resampled). */
+export const VIZ_AUDIO_ARGS: readonly string[] = ['-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2']
 
 /** Encoder settings as one string, part of the fingerprint: a change re-renders rather than mixes. */
 export function encodeSignature(encoder: VizEncoder, fps: number): string {
   return [...VIZ_ENC[encoder], '-g', String(gopFor(fps))].join(' ')
 }
 
+/** Half a second: YouTube asks for a closed GOP of half the frame rate. */
 function gopFor(fps: number): number {
-  return Math.max(1, Math.round(fps * 2))
+  return Math.max(1, Math.round(fps / 2))
 }
 
 /**
@@ -117,9 +128,11 @@ export function buildSegmentArgs(o: { width: number; height: number; fps: number
 }
 
 /**
- * Join the segments (stream copy) and add the audio. `audioArgs` follows the
- * old styles' rule (chooseAudioArgs). A window (preview) seeks the audio and
- * must re-encode it, a copy would not start on the exact sample.
+ * Join the segments (stream copy) and add the audio (VIZ_AUDIO_ARGS). A
+ * window (preview) seeks the audio and must re-encode it, a copy would not
+ * start on the exact sample. No edit lists (YouTube's spec): the B-frame delay
+ * becomes negative composition offsets instead, so video and audio still both
+ * start at 0. moov goes first (faststart).
  */
 export function buildAssembleArgs(o: {
   listFile: string; audioPath: string; audioArgs: string[]; outFile: string
@@ -133,7 +146,7 @@ export function buildAssembleArgs(o: {
     '-f', 'concat', '-safe', '0', '-i', o.listFile,
     ...window, '-i', o.audioPath,
     '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', ...o.audioArgs,
-    '-movflags', '+faststart', '-f', 'mp4', o.outFile,
+    '-use_editlist', '0', '-movflags', '+faststart+negative_cts_offsets', '-f', 'mp4', o.outFile,
   ]
 }
 
@@ -738,7 +751,7 @@ export interface RenderSceneOptions {
   /** Segments, manifest and analysis live here; kept across restarts. */
   vizDir: string
   outFile: string
-  /** From chooseAudioArgs(codec): the same rule as the old styles. */
+  /** VIZ_AUDIO_ARGS, normally. */
   audioArgs: string[]
   ffmpegPath: string
   ffprobePath: string
