@@ -72,9 +72,17 @@ export function writeSourceRecord(workDir: string, file: string, title: string):
  * keeps killing the process must not loop, but a long render may see many
  * image updates: only resumes after which no new segment was finished count,
  * and `maxResumes` of those in a row end it. Counts the attempt.
+ *
+ * A job whose render is complete (out.mp4 matches rendered.json: it was
+ * waiting for or running the upload) is always resumed and never counted:
+ * it cannot finish a new segment, so the rule would otherwise end it — and
+ * delete hours of rendering — after a few deploys while it waits to upload.
  */
 export function claimSceneResume(job: Job, workDir: string, maxResumes: number): boolean {
-  if (job.style !== 'scene' || job.videoId || !readSourceRecord(workDir)) return false
+  if (job.style !== 'scene' || job.videoId) return false
+  const source = readSourceRecord(workDir)
+  if (!source) return false
+  if (isRenderComplete(workDir, source.file)) return true
   const counter = join(workDir, VIZ_DIR, 'resumes.json')
   let done = 0
   try { done = Object.keys(JSON.parse(readFileSync(join(workDir, VIZ_DIR, 'manifest.json'), 'utf8')).segments ?? {}).length } catch { /* none yet */ }
@@ -126,6 +134,24 @@ export function ensureFreeSpace(dir: string, minGb: number, free: (d: string) =>
 
 const KEPT_FILE = 'kept.json'
 const RENDERED_FILE = 'rendered.json'
+
+/**
+ * Is the scene job's out.mp4 a finished render of its saved input (the stamp
+ * renderSceneForJob writes once the video is assembled)? Then a resume skips
+ * straight to the upload.
+ */
+export function isRenderComplete(workDir: string, audioPath: string): boolean {
+  const vizDir = join(workDir, VIZ_DIR)
+  try {
+    const r = JSON.parse(readFileSync(join(vizDir, RENDERED_FILE), 'utf8'))
+    const input = loadVizInput(vizDir, audioPath)
+    if (!input || r?.sceneVersion !== sceneCodeVersion()) return false
+    if (r.inputHash !== hashInput(input) && r.inputHash !== legacyHashInput(input)) return false
+    return statSync(join(workDir, 'out.mp4')).size === r.bytes
+  } catch {
+    return false
+  }
+}
 
 /**
  * Stamps (manifest fingerprint, rendered.json) written with an input hash
