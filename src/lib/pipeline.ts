@@ -412,6 +412,7 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
       )
     })
     jobs.setResult(jobId, videoId, videoUrl, privacyApplied, job.style)
+    jobs.markDescriptionSynced(jobId) // uploaded with today's description: nothing for the backfill to do
     stage = 'done'
     if (privacyApplied && privacyApplied !== job.privacy) {
       logLine(`warning: requested ${job.privacy} but YouTube set ${privacyApplied} (unverified OAuth apps are forced to private)`)

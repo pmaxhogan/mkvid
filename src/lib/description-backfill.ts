@@ -239,7 +239,7 @@ export async function runDescriptionBackfill(deps: BackfillDeps, opts: BackfillO
           else {
             const owned = isMkvidDescription(cur.description, job)
             deps.log(`  --- now${owned ? '' : '  [edited by a person: left alone without --force]'}\n${indent(cur.description)}`)
-            if (cur.description.trim() === next) deps.log('  (already current: would be marked done, no update)')
+            if (sameText(cur.description, next)) deps.log('  (already current: would be marked done, no update)')
           }
         }
         deps.log(`  +++ new${needsPageLookup(job) && !page ? '  [SoundCloud page unresolved: api URL kept]' : ''}\n${indent(next)}`)
@@ -288,7 +288,7 @@ export async function runDescriptionBackfill(deps: BackfillDeps, opts: BackfillO
           deps.jobs.setMeta(job.id, { ...fresh, recordingUrl: page })
         }
         const next = describeJob(job, page)
-        if (cur.description.trim() === next) {
+        if (sameText(cur.description, next)) {
           deps.jobs.markDescriptionSynced(job.id)
           r.alreadyCurrent++
           continue
@@ -315,6 +315,11 @@ export async function runDescriptionBackfill(deps: BackfillDeps, opts: BackfillO
     deps.log(`[${account}] updated ${r.updated}, already current ${r.alreadyCurrent}, gone ${r.gone}, edited by a person ${r.handEdited}, page unresolved ${r.unresolved}; ${left} left; ${spent} units spent today${r.stoppedBy ? `; stopped: ${r.stoppedBy}${r.error ? ` (${r.error})` : ''}` : ''}`)
   }
   return reports
+}
+
+function sameText(a: string, b: string): boolean {
+  const norm = (s: string) => s.replace(/\r\n/g, '\n').trim()
+  return norm(a) === norm(b)
 }
 
 function indent(text: string): string {

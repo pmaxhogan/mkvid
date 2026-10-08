@@ -178,6 +178,16 @@ describe('runDescriptionBackfill', () => {
     expect(s.jobs.descriptionBackfillPending('shared').map((j) => j.id)).toEqual(['job1'])
     s.jobs.markVideoDeleted('job0')
     expect(s.jobs.descriptionBackfillPending('primary')).toHaveLength(0)
+    // runJob marks a fresh upload synced: it already has the current description
+    s.jobs.markDescriptionSynced('job1')
+    expect(s.jobs.descriptionBackfillPending('shared')).toHaveLength(0)
+  })
+
+  it('a current description that YouTube returns with CRLF is not updated again', async () => {
+    const s = setup(1)
+    s.live.set('vid00000000', { ...s.live.get('vid00000000')!, description: `Tracklist: ${SET}\r\nRecording: https://soundcloud.com/dj/track-1000` })
+    const [r] = await runDescriptionBackfill(s.deps, opts())
+    expect(r).toMatchObject({ updated: 0, alreadyCurrent: 1 })
   })
 })
 
