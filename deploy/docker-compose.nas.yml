@@ -14,6 +14,12 @@ services:
     # spare CPU mkvid may use. The entrypoint also runs node at nice 19
     # (MKVID_NICE). Drawing workers default to usable cores - 2 (10 here).
     cpu_shares: 2
+    # BBR for this container's network namespace only (the YouTube upload is
+    # one long TCP stream that cubic keeps loss-limited). Needs the host's
+    # tcp_bbr module loaded (deploy/README.md "Network"); other containers and
+    # the host stay on cubic.
+    sysctls:
+      net.ipv4.tcp_congestion_control: bbr
     volumes:
       - /mnt/alpha/apps/mkvid/data:/data
     labels:

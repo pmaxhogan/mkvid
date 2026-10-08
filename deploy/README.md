@@ -99,6 +99,17 @@ GHCR auth from the mounted `/root/.docker/config.json` (from the one-time
    `ssh mnmserver 'id=$(sudo docker inspect -f {{.Id}} mkvid); cat /sys/fs/cgroup/docker/$id/cpu.weight; sudo docker exec mkvid sh -c "for p in /proc/[0-9]*; do echo \$(cut -d\" \" -f19 \$p/stat) \$(cat \$p/comm); done"'`
    (weight `1`; every process at `19`).
 
+   **Network.** The compose sets `net.ipv4.tcp_congestion_control: bbr` for
+   mkvid's network namespace only: a YouTube upload is one long TCP stream,
+   and cubic held it loss-limited at ~2 MB/s. The host default (cubic,
+   `fq_codel`) is unchanged for everything else. BBR is a module TrueNAS does
+   not load by default; it is loaded at boot by an Init/Shutdown Script
+   (System → Advanced → Init/Shutdown Scripts, PREINIT command
+   `modprobe tcp_bbr`). Without it the container fails to start with a sysctl
+   error. Check:
+   `ssh mnmserver 'cat /proc/sys/net/ipv4/tcp_available_congestion_control; sudo nsenter -t $(sudo docker inspect -f {{.State.Pid}} mkvid) -n ss -ti | grep -o "bbr\|cubic" | sort | uniq -c'`
+   (`bbr` listed; mkvid's sockets on bbr).
+
 10. **Verify:** open `https://mkvid.maxhogan.dev` → CF Access login → Connect
     YouTube → submit a short track → watch progress → confirm the private
     video + push notification.
