@@ -23,7 +23,7 @@ Cloudflare Access.
 set a followed DJ has on 1001tracklists. Sets with **no YouTube recording but a
 SoundCloud / hearthis.at one** are queued there for mkvid; with `TRACKED_URL` +
 `TRACKED_TOKEN` set, mkvid polls that queue (`TRACKED_POLL_SECONDS`, default 60)
-whenever a new set could start downloading right away (no job limit: one set per stage - download, analyse, render, assemble, upload - so a set is claimed only when download is free and no set here waits for download, analyse or render; one waiting to upload does not hold back the next render) and:
+whenever a new set could start downloading right away (no job limit: one set per stage - download, analyse, render, assemble - and `UPLOAD_CONCURRENCY` (default 2) in upload, so a set is claimed only when download is free, no set here waits for download, analyse or render, and fewer sets wait to upload than there are upload slots: with the default 2, one set waiting to upload does not hold back the next render, two do; `UPLOAD_CONCURRENCY=1` uploads one at a time and stops claiming while one set waits to upload). Each upload logs `upload: progress` every 5 min and `upload: done` / `upload: failed` at the end (bytes, seconds, MB/s, account, uploads at once and on the same account) and:
 
 1. **claims** one request (`POST /mkvid/claim`, bearer `TRACKED_TOKEN` = the
    Worker's `MKVID_TOKEN`) — the set page title, the recording URL and the
@@ -34,7 +34,10 @@ whenever a new set could start downloading right away (no job limit: one set per
    (`GOOGLE_OAUTH_CLIENT_*`, project mkvid-uploads) first and spills to the
    sync's (`SHARED_GOOGLE_OAUTH_CLIENT_*`, project tracked-youtube) once that
    quota day is spent. Same channel, separate 10 000-unit quotas (an upload
-   costs 1 600). Polling continues with no account connected, so tracked's
+   costs 1 600). With `TRACKED_SPREAD_ACCOUNTS=1` the body also names a
+   `preferAccount` (the connected account with the fewest sets in flight
+   here), which tracked honours while that account has claims left today, so
+   sets uploading at once tend to use different projects. Polling continues with no account connected, so tracked's
    panel can say "reconnect YouTube on mkvid" rather than "mkvid is down";
 2. **resolves the source**: SoundCloud API track URLs go to yt-dlp as-is; a
    hearthis.at *embed* is resolved to the track page yt-dlp's extractor accepts

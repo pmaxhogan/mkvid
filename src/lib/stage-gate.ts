@@ -1,10 +1,12 @@
 /**
- * One job per stage at a time. The queue has no job limit (queue.ts): this is
- * the limit, so sets move through the stages like a pipeline (one downloads
- * while another analyses, a third renders, ...) and two renders never fight
- * over the CPU. The tracked poller claims a new set only when every job in
- * flight holds a stage and download is free (tracked.ts), so at most one set
- * per stage is here and none piles up waiting.
+ * A few jobs per stage at a time: one per stage unless a stage is given more
+ * slots (upload has UPLOAD_CONCURRENCY, default 2: a single YouTube upload
+ * connection is throttled well below the uplink). The queue has no job limit
+ * (queue.ts): this is the limit, so sets move through the stages like a
+ * pipeline (one downloads while another analyses, a third renders, ...) and
+ * two renders never fight over the CPU. The tracked poller claims a new set
+ * only when every job in flight holds a stage and download is free
+ * (tracked.ts), so about one set per stage slot is here and none piles up.
  *
  * A job holds a stage only while it runs that stage and never holds one while
  * waiting for the next, so two jobs cannot deadlock. Waiters are served in
@@ -15,30 +17,52 @@ import type { StageKey } from './render-progress.js'
 
 export type GateStage = StageKey
 
-interface Slot { holder: string | null; waiters: Array<{ jobId: string; wake: () => void }> }
+interface Slot { capacity: number; holders: string[]; waiters: Array<{ jobId: string; wake: () => void }> }
 
 export class StageGate {
   private slots = new Map<GateStage, Slot>()
 
+  /** `capacity`: how many jobs may run a stage at once (1 for any stage not named). */
+  constructor(private readonly capacity: Partial<Record<GateStage, number>> = {}) {}
+
   private slot(stage: GateStage): Slot {
     let s = this.slots.get(stage)
-    if (!s) { s = { holder: null, waiters: [] }; this.slots.set(stage, s) }
+    if (!s) {
+      s = { capacity: Math.max(1, Math.floor(this.capacity[stage] ?? 1)), holders: [], waiters: [] }
+      this.slots.set(stage, s)
+    }
     return s
   }
 
-  /** The job running `stage` now, if any. */
-  holder(stage: GateStage): string | null {
-    return this.slots.get(stage)?.holder ?? null
+  /** How many jobs may run `stage` at once. */
+  slotsOf(stage: GateStage): number {
+    return this.slot(stage).capacity
   }
 
-  /** Stages some job is running now. A job holds at most one at a time. */
+  /** The job that took `stage` first of those running it now, if any. */
+  holder(stage: GateStage): string | null {
+    return this.slots.get(stage)?.holders[0] ?? null
+  }
+
+  /** Every job running `stage` now, in the order they took it. */
+  holders(stage: GateStage): string[] {
+    return [...(this.slots.get(stage)?.holders ?? [])]
+  }
+
+  /** Does `stage` have a free slot (a job asking now would not wait)? */
+  hasRoom(stage: GateStage): boolean {
+    const s = this.slot(stage)
+    return s.holders.length < s.capacity && s.waiters.length === 0
+  }
+
+  /** Jobs running some stage now. A job holds at most one stage at a time. */
   held(): number {
     let n = 0
-    for (const s of this.slots.values()) if (s.holder !== null) n++
+    for (const s of this.slots.values()) n += s.holders.length
     return n
   }
 
-  /** Jobs waiting for a stage another job holds (only `stages`, when given). */
+  /** Jobs waiting for a stage whose slots are all taken (only `stages`, when given). */
   waiting(stages?: readonly GateStage[]): number {
     let n = 0
     for (const [stage, s] of this.slots) if (!stages || stages.includes(stage)) n += s.waiters.length
@@ -53,22 +77,25 @@ export class StageGate {
 
   /**
    * Run `fn` holding `stage`. `onWait` is called once, before waiting, when
-   * another job holds it (with that job's id).
+   * every slot of it is taken (with the ids of the jobs holding them).
    */
-  async run<T>(stage: GateStage, jobId: string, fn: () => Promise<T>, onWait?: (holder: string) => void): Promise<T> {
+  async run<T>(stage: GateStage, jobId: string, fn: () => Promise<T>, onWait?: (holders: string[]) => void): Promise<T> {
     const s = this.slot(stage)
-    if (s.holder !== null) {
-      onWait?.(s.holder)
+    if (s.holders.length >= s.capacity || s.waiters.length > 0) {
+      onWait?.([...s.holders])
+      // The slot is handed over in the finally below: holders already lists this job when it wakes.
       await new Promise<void>((wake) => s.waiters.push({ jobId, wake }))
+    } else {
+      s.holders.push(jobId)
     }
-    s.holder = jobId
     try {
       return await fn()
     } finally {
-      const next = s.waiters.shift()
-      s.holder = null
+      const i = s.holders.indexOf(jobId)
+      if (i >= 0) s.holders.splice(i, 1)
       // Hand over synchronously: the next waiter takes the slot before anyone new can.
-      if (next) { s.holder = next.jobId; next.wake() }
+      const next = s.waiters.shift()
+      if (next) { s.holders.push(next.jobId); next.wake() }
     }
   }
 }

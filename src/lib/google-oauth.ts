@@ -66,10 +66,25 @@ export function needsRefresh(tokens: StoredTokens, now: number, minValidMs = DEF
   return tokens.expiresAt - now < minValidMs
 }
 
+/**
+ * A refresh in flight per token store: two uploads on one account ask for a
+ * new token at the same moment (both near expiry, or both just got a 401),
+ * and they share one refresh instead of racing two.
+ */
+const refreshing = new WeakMap<TokenStore, Promise<string>>()
+
 export async function getValidAccessToken(store: TokenStore, cfg: Config['google'], opts: TokenOptions = {}): Promise<string> {
   const tokens = store.load()
   if (!tokens) throw new Error('reconnect_youtube')
   if (!opts.force && !needsRefresh(tokens, Date.now(), opts.minValidMs)) return tokens.accessToken
+  const pending = refreshing.get(store)
+  if (pending) return pending
+  const p = refreshAccessToken(store, cfg, tokens).finally(() => refreshing.delete(store))
+  refreshing.set(store, p)
+  return p
+}
+
+async function refreshAccessToken(store: TokenStore, cfg: Config['google'], tokens: StoredTokens): Promise<string> {
   const client = makeOAuthClient(cfg)
   client.setCredentials({ refresh_token: tokens.refreshToken })
   try {

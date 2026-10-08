@@ -24,11 +24,22 @@ export interface Config {
   ytdlpPath: string
   ffmpegAutoUpdate: boolean
   /**
+   * Jobs uploading to YouTube at once (UPLOAD_CONCURRENCY, default 2). Every
+   * other stage runs one job at a time; a single upload connection gets far
+   * less than the uplink, so two run side by side. 1 = the old behaviour.
+   */
+  uploadConcurrency: number
+  /**
    * The tracked Worker's mkvid queue (null = not configured, nothing is
    * polled). `token` is tracked's MKVID_TOKEN; `privacy` is what queued sets
    * are uploaded as (unlisted by default — tracked adds them to playlists).
+   * `spreadAccounts` (TRACKED_SPREAD_ACCOUNTS, default off): each claim asks
+   * tracked for the connected account with the fewest sets in flight here
+   * (`preferAccount`), so two sets that reach the upload stage together tend
+   * to upload through different Google projects. tracked honours it only
+   * while that account has claims left today; an older tracked ignores it.
    */
-  tracked: { url: string; token: string; pollSeconds: number; privacy: Privacy; style: WaveStyle } | null
+  tracked: { url: string; token: string; pollSeconds: number; privacy: Privacy; style: WaveStyle; spreadAccounts: boolean } | null
   /**
    * The `scene` style (src/viz). `workers` drawing threads (default usable cores - 2, never more than
    * the usable cores: src/lib/cpu),
@@ -104,6 +115,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ffprobePath: env.FFPROBE_PATH || 'ffprobe',
     ytdlpPath: env.YTDLP_PATH || 'yt-dlp',
     ffmpegAutoUpdate: env.FFMPEG_AUTOUPDATE ? truthy(env.FFMPEG_AUTOUPDATE) : false,
+    uploadConcurrency: positiveInt(env.UPLOAD_CONCURRENCY, 2),
     tracked: env.TRACKED_URL && env.TRACKED_TOKEN
       ? {
           url: env.TRACKED_URL.replace(/\/$/, ''),
@@ -112,6 +124,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           privacy: (env.TRACKED_PRIVACY as Privacy) || 'unlisted',
           // static until switched: the scene style changes what tracked's videos look like.
           style: WAVE_STYLES.includes(env.TRACKED_STYLE as WaveStyle) ? env.TRACKED_STYLE as WaveStyle : 'static',
+          spreadAccounts: truthy(env.TRACKED_SPREAD_ACCOUNTS),
         }
       : null,
     viz: {

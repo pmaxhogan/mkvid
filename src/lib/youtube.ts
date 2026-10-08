@@ -62,6 +62,14 @@ export interface UploadOptions {
   privacy: Privacy
   categoryId: string
   onLog?: (line: string) => void
+  /**
+   * Called about every `throughputEveryMs` (default 5 min) while bytes flow:
+   * how much YouTube holds now and how fast it got there since the last call.
+   */
+  onThroughput?: (s: UploadThroughput) => void
+  throughputEveryMs?: number
+  /** Tests: a clock. */
+  now?: () => number
   /** Tests: a stand-in for fetch, smaller chunks, no waiting. */
   fetch?: typeof fetch
   chunkBytes?: number
@@ -71,6 +79,17 @@ export interface UploadOptions {
 }
 
 type Req = { method: string; headers: Record<string, string>; body?: string | Uint8Array }
+
+export interface UploadThroughput {
+  /** Bytes YouTube holds now, of `totalBytes`. */
+  heldBytes: number
+  totalBytes: number
+  /** Bytes it took, and seconds that took, since the last sample (or the start). */
+  intervalBytes: number
+  intervalSeconds: number
+  /** Seconds since the first chunk went out. */
+  elapsedSeconds: number
+}
 
 /**
  * Upload a video with YouTube's resumable protocol: open a session, then send
@@ -88,6 +107,8 @@ export async function uploadVideo(
   const maxRetries = opts.maxRetries ?? 8
   const delay = opts.retryDelayMs ?? ((n: number) => Math.min(60_000, 1000 * 2 ** n))
   const onLog = opts.onLog ?? (() => {})
+  const now = opts.now ?? Date.now
+  const sampleEvery = opts.throughputEveryMs ?? 5 * 60_000
   const total = (await stat(opts.filePath)).size
   if (total === 0) throw new Error(`upload: ${opts.filePath} is empty`)
   const metadata = JSON.stringify({
@@ -171,6 +192,18 @@ export async function uploadVideo(
     let session = await startSession()
     let offset = 0
     let restarts = 0
+    const startedAt = now()
+    let sample = { at: startedAt, held: 0 }
+    /** Report throughput once a sample's worth of time has passed. */
+    const sampleThroughput = (heldBytes: number) => {
+      const t = now()
+      if (!opts.onThroughput || t - sample.at < sampleEvery) return
+      opts.onThroughput({
+        heldBytes, totalBytes: total, intervalBytes: Math.max(0, heldBytes - sample.held),
+        intervalSeconds: (t - sample.at) / 1000, elapsedSeconds: (t - startedAt) / 1000,
+      })
+      sample = { at: t, held: heldBytes }
+    }
     onProgress(0)
     for (;;) {
       let res: Response | null
@@ -202,6 +235,7 @@ export async function uploadVideo(
         else if (!(await backoff(`no progress at byte ${offset}`))) throw new Error(`upload: YouTube stopped taking bytes at ${offset} of ${total}`)
         offset = next
         onProgress(total > 0 ? Math.min(100, (offset / total) * 100) : -1)
+        sampleThroughput(offset)
         continue
       }
       if (res.status === 404 || res.status === 410) {
@@ -213,6 +247,7 @@ export async function uploadVideo(
         onLog(`upload: the upload session is gone (HTTP ${res.status}), starting over`)
         session = await startSession()
         offset = 0
+        sample = { at: now(), held: 0 }
         continue
       }
       const err = await httpError(res, 'upload')

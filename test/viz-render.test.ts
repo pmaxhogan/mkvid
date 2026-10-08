@@ -11,7 +11,8 @@ import {
 import type { VizInput } from '../src/viz/types.js'
 import { loadConfig } from '../src/config.js'
 import { buildContext } from '../src/context.js'
-import { claimSceneResume, readSourceRecord, writeSourceRecord, loadVizInput, rebaseKeptInput, migrateInputStamps } from '../src/lib/pipeline.js'
+import { sceneCodeVersion } from '../src/viz/render.js'
+import { claimSceneResume, isRenderComplete, readSourceRecord, writeSourceRecord, loadVizInput, rebaseKeptInput, migrateInputStamps } from '../src/lib/pipeline.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'mkvid-viz-'))
 afterAll(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 5 }))
@@ -385,6 +386,30 @@ describe('restart recovery', () => {
     expect(claimSceneResume(job, wd, 2)).toBe(false)
     expect(claimSceneResume({ ...job, style: 'static' }, wd, 9)).toBe(false)
     expect(readSourceRecord(wd)).toEqual({ file: join(wd, 'a.opus'), title: 'a', pageUrl: null })
+  })
+
+  it('claimSceneResume never counts a job whose render is complete (waiting for or in upload); a stale stamp still counts', () => {
+    const wd = mkdtempSync(join(tmp, 'claim-rendered-'))
+    const audio = join(wd, 'a.opus')
+    writeFileSync(audio, 'x')
+    writeSourceRecord(wd, audio, 'a')
+    const input: VizInput = { audioPath: audio, durationSeconds: 60, setTitle: 'a', setArtist: null, setArtworkPath: null, tracks: [], width: 64, height: 36, fps: 30 }
+    writeFileSync(join(wd, 'viz', 'input.json'), JSON.stringify(input))
+    writeFileSync(join(wd, 'out.mp4'), Buffer.alloc(1234))
+    const stamp = (s: object) => writeFileSync(join(wd, 'viz', 'rendered.json'), JSON.stringify({ inputHash: hashInput(input), sceneVersion: sceneCodeVersion(), bytes: 1234, ...s }))
+    stamp({})
+    expect(isRenderComplete(wd, audio)).toBe(true)
+    const job = { style: 'scene', videoId: null } as any
+    for (let n = 0; n < 10; n++) expect(claimSceneResume(job, wd, 2)).toBe(true)
+    expect(existsSync(join(wd, 'viz', 'resumes.json'))).toBe(false)
+    // A truncated video, or a stamp for another input: not complete, the render-loop guard applies.
+    stamp({ bytes: 999 })
+    expect(isRenderComplete(wd, audio)).toBe(false)
+    stamp({ inputHash: 'other' })
+    expect(isRenderComplete(wd, audio)).toBe(false)
+    expect(claimSceneResume(job, wd, 2)).toBe(true)
+    expect(claimSceneResume(job, wd, 2)).toBe(true)
+    expect(claimSceneResume(job, wd, 2)).toBe(false)
   })
 
   it('claimSceneResume only counts restarts without progress: a long render survives many image updates', () => {

@@ -11,6 +11,7 @@ import {
   isPermanentFailure,
   makeTrackedClient,
   pollTracked,
+  preferredAccount,
   retryRefusals,
   reportJobToTracked,
   TrackedHttpError,
@@ -34,7 +35,7 @@ function fakeClient(requests: TrackedRequest[] = []): TrackedClient & { calls: A
   const calls: Array<[string, unknown]> = []
   return {
     calls,
-    async claim(accounts) { calls.push(['claim', [...accounts]]); return requests.shift() ?? null },
+    async claim(accounts, _style, preferAccount) { calls.push(['claim', preferAccount ? { accounts: [...accounts], preferAccount } : [...accounts]]); return requests.shift() ?? null },
     async job(id, jobId) { calls.push(['job', { id, jobId }]) },
     async complete(input) { calls.push(['complete', input]); return { status: 'done' } },
     async fail(input) { calls.push(['fail', input]) },
@@ -61,7 +62,8 @@ const connected = (ctx: ReturnType<typeof buildContext>) =>
 
 describe('config', () => {
   it('parses the tracked settings, trims the URL, defaults poll + privacy', () => {
-    expect(cfg.tracked).toEqual({ url: 'https://tracked.example', token: 'mk', pollSeconds: 60, privacy: 'unlisted', style: 'static' })
+    expect(cfg.tracked).toEqual({ url: 'https://tracked.example', token: 'mk', pollSeconds: 60, privacy: 'unlisted', style: 'static', spreadAccounts: false })
+    expect(loadConfig({ TRACKED_URL: 'x', TRACKED_TOKEN: 't', TRACKED_SPREAD_ACCOUNTS: '1' } as any).tracked!.spreadAccounts).toBe(true)
     expect(loadConfig({} as any).tracked).toBeNull()
     expect(loadConfig({ TRACKED_URL: 'x' } as any).tracked).toBeNull()
     expect(loadConfig({ TRACKED_URL: 'x', TRACKED_TOKEN: 't', TRACKED_POLL_SECONDS: '5', TRACKED_PRIVACY: 'private' } as any).tracked).toMatchObject({ pollSeconds: 15, privacy: 'private' })
@@ -108,6 +110,9 @@ describe('makeTrackedClient', () => {
     // The claim also names the style tracked jobs are rendered with (tracked gates recreations on it).
     await client.claim(['primary'], 'scene')
     expect(seen[1]!.init.body).toBe(JSON.stringify({ accounts: ['primary'], style: 'scene' }))
+    // TRACKED_SPREAD_ACCOUNTS: the account to prefer, only when there is one.
+    await client.claim(['primary', 'shared'], 'scene', 'shared')
+    expect(seen[2]!.init.body).toBe(JSON.stringify({ accounts: ['primary', 'shared'], style: 'scene', preferAccount: 'shared' }))
     await expect(client.complete({ id: request.id, videoId: 'v', videoUrl: 'u', privacy: 'unlisted', jobId: 'j', style: 'static' })).rejects.toBeInstanceOf(TrackedHttpError)
   })
 })
@@ -378,17 +383,55 @@ describe('pollTracked with no job limit, one set per stage', () => {
     expect(await pollTracked(ctx, client, opts)).toEqual({ action: 'busy' })
   })
 
-  it('a set waiting for upload does not stop a claim: render is free for the next one', async () => {
-    const client = fakeClient([request, second, third])
+  it('two sets upload at once; fewer sets waiting for upload than upload slots do not stop a claim, a full batch does', async () => {
+    const fifth = { ...request, id: '55555555-5555-4555-8555-555555555555' }
+    const client = fakeClient([request, second, third, fourth, fifth])
     const ctx = buildContext(cfg, { tracked: client })
+    expect(ctx.gate.slotsOf('upload')).toBe(2)
     connected(ctx)
     holdJobs(ctx)
     const a = (await pollTracked(ctx, client, opts)) as { jobId: string }
     hold(ctx, 'upload', a)
     const b = (await pollTracked(ctx, client, opts)) as { jobId: string }
+    hold(ctx, 'upload', b) // a second upload slot: b uploads alongside a
+    expect(ctx.gate.holders('upload')).toEqual([a.jobId, b.jobId])
+    expect(ctx.gate.waiting()).toBe(0)
+    const c = (await pollTracked(ctx, client, opts)) as { jobId: string }
+    hold(ctx, 'upload', c) // c waits for upload: render is still free for the next one
+    expect(ctx.gate.waiting(['upload'])).toBe(1)
+    const d = (await pollTracked(ctx, client, opts)) as { action: string; jobId: string }
+    expect(d).toMatchObject({ action: 'started', requestId: fourth.id })
+    hold(ctx, 'upload', d) // two finished sets wait for upload: enough
+    expect(await pollTracked(ctx, client, opts)).toEqual({ action: 'busy' })
+  })
+
+  it('with UPLOAD_CONCURRENCY=1, one set waiting for upload stops a claim', async () => {
+    const client = fakeClient([request, second, third])
+    const ctx = buildContext({ ...cfg, uploadConcurrency: 1 }, { tracked: client })
+    connected(ctx)
+    holdJobs(ctx)
+    const a = (await pollTracked(ctx, client, opts)) as { jobId: string }
+    hold(ctx, 'upload', a)
+    const b = (await pollTracked(ctx, client, opts)) as { jobId: string }
+    expect(b).toMatchObject({ action: 'started' })
     hold(ctx, 'upload', b) // b waits for a's upload
     expect(ctx.gate.waiting()).toBe(1)
-    expect(await pollTracked(ctx, client, opts)).toMatchObject({ action: 'started', requestId: third.id })
+    expect(await pollTracked(ctx, client, opts)).toEqual({ action: 'busy' })
+  })
+
+  it('TRACKED_SPREAD_ACCOUNTS asks for the connected account with fewer sets in flight', async () => {
+    const twoCfg = loadConfig({ DATA_DIR: ':memory:', TRACKED_URL: 'https://tracked.example', TRACKED_TOKEN: 'mk', TRACKED_SPREAD_ACCOUNTS: '1', SHARED_GOOGLE_OAUTH_CLIENT_ID: 'i', SHARED_GOOGLE_OAUTH_CLIENT_SECRET: 's' } as any)
+    const client = fakeClient([request, second])
+    const ctx = buildContext(twoCfg, { tracked: client })
+    connected(ctx)
+    ctx.tokensShared!.save({ accessToken: 'a2', refreshToken: 'r2', expiresAt: Date.now() + 3600_000, scope: 's', connectedAt: 1 })
+    holdJobs(ctx)
+    const a = (await pollTracked(ctx, client, opts)) as { jobId: string }
+    expect(client.calls.find((c) => c[0] === 'claim')).toEqual(['claim', ['primary', 'shared']]) // nothing in flight: tracked's own order
+    expect(ctx.jobs.get(a.jobId)!.meta!.account).toBe('primary')
+    hold(ctx, 'render', a)
+    await pollTracked(ctx, client, opts)
+    expect(client.calls.filter((c) => c[0] === 'claim').at(-1)).toEqual(['claim', { accounts: ['primary', 'shared'], preferAccount: 'shared' }])
   })
 
   it('a set handed out again while its job is still here keeps that job and starts nothing', async () => {
@@ -455,5 +498,17 @@ describe('reportJobToTracked', () => {
     const rejecting: TrackedClient = { ...fakeClient(), complete: async () => { throw new TrackedHttpError(409, '{"error":"invalid_state"}') } }
     expect(await reportJobToTracked(ctx, job, rejecting)).toBe(true)
     expect(ctx.jobs.listUnreportedTracked()).toEqual([])
+  })
+})
+
+describe('preferredAccount', () => {
+  const job = (account?: 'primary' | 'shared') => ({ meta: { origin: 'tracked', requestId: 'r', setUrl: 's', sourceUrl: 'u', lastCueSeconds: null, artistName: null, ...(account ? { account } : {}) } as any })
+  it('picks the connected account with the fewest sets in flight, else the one the newest set does not use', () => {
+    expect(preferredAccount(['primary', 'shared'], [])).toBeUndefined()
+    expect(preferredAccount(['primary'], [job('primary')])).toBeUndefined()
+    expect(preferredAccount(['primary', 'shared'], [job()])).toBe('shared') // no account = primary
+    expect(preferredAccount(['primary', 'shared'], [job('shared'), job('shared'), job('primary')])).toBe('primary')
+    expect(preferredAccount(['primary', 'shared'], [job('primary'), job('shared')])).toBe('primary')
+    expect(preferredAccount(['primary', 'shared'], [job('shared'), job('primary')])).toBe('shared')
   })
 })

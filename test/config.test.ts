@@ -25,6 +25,12 @@ describe('loadConfig', () => {
     expect(loadConfig({ SHARED_GOOGLE_OAUTH_CLIENT_ID: 'x', SHARED_GOOGLE_OAUTH_CLIENT_SECRET: 'y', OAUTH_REDIRECT_BASE: 'https://mkvid.maxhogan.dev/' } as any).googleShared)
       .toEqual({ clientId: 'x', clientSecret: 'y', redirectBase: 'https://mkvid.maxhogan.dev' })
   })
+  it('UPLOAD_CONCURRENCY sets the upload slots, 2 by default', () => {
+    expect(loadConfig({} as any).uploadConcurrency).toBe(2)
+    expect(loadConfig({ UPLOAD_CONCURRENCY: '1' } as any).uploadConcurrency).toBe(1)
+    expect(loadConfig({ UPLOAD_CONCURRENCY: '0' } as any).uploadConcurrency).toBe(2)
+    expect(loadConfig({ UPLOAD_CONCURRENCY: 'x' } as any).uploadConcurrency).toBe(2)
+  })
   it('strips trailing slash from redirectBase', () => {
     const c = loadConfig({ OAUTH_REDIRECT_BASE: 'https://mkvid.maxhogan.dev/' } as any)
     expect(c.google.redirectBase).toBe('https://mkvid.maxhogan.dev')

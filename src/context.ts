@@ -31,16 +31,17 @@ export interface AppContext {
   push: ReturnType<typeof makePushRepo>
   hub: SseHub
   queue: JobQueue
-  /** One job per stage at a time (download, analyse, render, assemble, upload). */
+  /** One job per stage at a time (download, analyse, render, assemble), UPLOAD_CONCURRENCY in upload. */
   gate: StageGate
   /** Client for tracked's mkvid queue; null when TRACKED_URL/TRACKED_TOKEN are unset. */
   tracked: TrackedClient | null
 }
 
 /**
- * Jobs in flight at once: no limit. The stage gate allows one job per stage,
- * and the tracked poller claims a set only when it can start downloading
- * right away (tracked.ts canClaim), so this many is at most one per stage.
+ * Jobs in flight at once: no limit. The stage gate allows one job per stage
+ * (UPLOAD_CONCURRENCY in upload), and the tracked poller claims a set only
+ * when it can start downloading right away (tracked.ts canClaim), so this
+ * many is about one per stage slot.
  */
 export const JOB_SLOTS = Number.POSITIVE_INFINITY
 
@@ -51,7 +52,7 @@ export function buildContext(config: Config, opts: { tracked?: TrackedClient | n
     jobs: makeJobsRepo(db), tokens: makeTokenStore(db, 'primary'), tokensShared: config.googleShared ? makeTokenStore(db, 'shared') : null,
     kv: makeKvCache(db), push: makePushRepo(db),
     hub: new SseHub(),
-    gate: new StageGate(),
+    gate: new StageGate({ upload: config.uploadConcurrency }),
     tracked: opts.tracked !== undefined ? opts.tracked : config.tracked ? makeTrackedClient(config.tracked) : null,
   } as AppContext
   ctx.accountFor = (account) =>

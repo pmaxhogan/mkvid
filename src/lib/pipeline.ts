@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync, renameSync, statSync, statfsSync } from 'node:fs'
 import { join, basename, extname } from 'node:path'
 import type { AppContext } from '../context.js'
-import type { Job, SseMessage } from '../types.js'
+import type { Job, SseMessage, UploadAccount } from '../types.js'
 import type { VizInput } from '../viz/types.js'
 import { renderScene, hashInput, legacyHashInput, rebasePath, rebaseVizInput, readManifest, writeManifest, sceneCodeVersion } from '../viz/render.js'
 import { downloadSetArtwork, resolveVizTracks, vizTracksFromTracked } from '../viz/assets.js'
@@ -10,7 +10,7 @@ import { downloadAudio } from './ytdlp.js'
 import { probeAudio } from './probe.js'
 import { chooseFps, chooseAudioArgs, renderVideo } from './ffmpeg.js'
 import { getValidAccessToken, UPLOAD_MIN_VALID_MS } from './google-oauth.js'
-import { uploadVideo, addToPlaylist, type TokenGetter } from './youtube.js'
+import { uploadVideo, addToPlaylist, type TokenGetter, type UploadThroughput } from './youtube.js'
 import { sendPush } from './push.js'
 import { UPLOAD_PREFIX, sanitizeUploadName } from './upload.js'
 import { log } from './log.js'
@@ -63,9 +63,17 @@ export function writeSourceRecord(workDir: string, file: string, title: string, 
  * keeps killing the process must not loop, but a long render may see many
  * image updates: only resumes after which no new segment was finished count,
  * and `maxResumes` of those in a row end it. Counts the attempt.
+ *
+ * A job whose render is complete (out.mp4 matches rendered.json: it was
+ * waiting for or running the upload) is always resumed and never counted:
+ * it cannot finish a new segment, so the rule would otherwise end it — and
+ * delete hours of rendering — after a few deploys while it waits to upload.
  */
 export function claimSceneResume(job: Job, workDir: string, maxResumes: number): boolean {
-  if (job.style !== 'scene' || job.videoId || !readSourceRecord(workDir)) return false
+  if (job.style !== 'scene' || job.videoId) return false
+  const source = readSourceRecord(workDir)
+  if (!source) return false
+  if (isRenderComplete(workDir, source.file)) return true
   const counter = join(workDir, VIZ_DIR, 'resumes.json')
   let done = 0
   try { done = Object.keys(JSON.parse(readFileSync(join(workDir, VIZ_DIR, 'manifest.json'), 'utf8')).segments ?? {}).length } catch { /* none yet */ }
@@ -117,6 +125,24 @@ export function ensureFreeSpace(dir: string, minGb: number, free: (d: string) =>
 
 const KEPT_FILE = 'kept.json'
 const RENDERED_FILE = 'rendered.json'
+
+/**
+ * Is the scene job's out.mp4 a finished render of its saved input (the stamp
+ * renderSceneForJob writes once the video is assembled)? Then a resume skips
+ * straight to the upload.
+ */
+export function isRenderComplete(workDir: string, audioPath: string): boolean {
+  const vizDir = join(workDir, VIZ_DIR)
+  try {
+    const r = JSON.parse(readFileSync(join(vizDir, RENDERED_FILE), 'utf8'))
+    const input = loadVizInput(vizDir, audioPath)
+    if (!input || r?.sceneVersion !== sceneCodeVersion()) return false
+    if (r.inputHash !== hashInput(input) && r.inputHash !== legacyHashInput(input)) return false
+    return statSync(join(workDir, 'out.mp4')).size === r.bytes
+  } catch {
+    return false
+  }
+}
 
 /**
  * Stamps (manifest fingerprint, rendered.json) written with an input hash
@@ -233,6 +259,72 @@ export function adoptKeptWork(ctx: AppContext, job: Job, workDir: string, logLin
   return false
 }
 
+// ---------------------------------------------------------------------------
+// upload throughput: what one upload gets, and how many ran beside it
+
+const MB = 1e6
+
+/** Uploads running now and how many share each account (for the throughput logs). */
+export function uploadConcurrency(ctx: Pick<AppContext, 'gate' | 'jobs'>, account: UploadAccount): { total: number; sameAccount: number } {
+  const ids = ctx.gate.holders('upload')
+  const sameAccount = ids.filter((id) => accountOf(ctx.jobs.get(id)?.meta?.account) === account).length
+  return { total: ids.length, sameAccount }
+}
+
+function accountOf(a: UploadAccount | undefined): UploadAccount {
+  return a === 'shared' ? 'shared' : 'primary'
+}
+
+/**
+ * Watches one upload for the logs: concurrency at the start and at its peak
+ * (sampled on every chunk), a line every few minutes, and a summary when it
+ * ends — `docker logs mkvid | grep 'upload: '` gives MB/s per upload next to
+ * how many ran at once and how many of those on the same Google project.
+ */
+export function makeUploadMeter(
+  ctx: Pick<AppContext, 'gate' | 'jobs'>, a: { jobId: string; account: UploadAccount; bytes: number; logLine: (l: string) => void; now?: () => number },
+) {
+  const now = a.now ?? Date.now
+  const startedAt = now()
+  const atStart = uploadConcurrency(ctx, a.account)
+  let peak = atStart.total
+  let peakSameAccount = atStart.sameAccount
+  let held = 0
+  const observe = () => {
+    const c = uploadConcurrency(ctx, a.account)
+    peak = Math.max(peak, c.total)
+    peakSameAccount = Math.max(peakSameAccount, c.sameAccount)
+    return c
+  }
+  const base = () => ({ jobId: a.jobId, account: a.account, uploadSlots: ctx.gate.slotsOf('upload'), concurrentAtStart: atStart.total, concurrentPeak: peak, sameAccountPeak: peakSameAccount })
+  return {
+    progress(percent: number) {
+      if (percent >= 0) held = Math.round((percent / 100) * a.bytes)
+      observe()
+    },
+    throughput(t: UploadThroughput) {
+      held = t.heldBytes
+      const c = observe()
+      const mbps = t.intervalSeconds > 0 ? t.intervalBytes / MB / t.intervalSeconds : 0
+      const avg = t.elapsedSeconds > 0 ? t.heldBytes / MB / t.elapsedSeconds : 0
+      a.logLine(`upload: ${(t.heldBytes / 1e9).toFixed(2)} of ${(t.totalBytes / 1e9).toFixed(2)} GB, ${mbps.toFixed(1)} MB/s over the last ${Math.round(t.intervalSeconds)} s (${avg.toFixed(1)} MB/s so far; ${c.total} upload(s) running, ${c.sameAccount} on ${a.account})`)
+      log('info', 'upload: progress', { ...base(), heldBytes: t.heldBytes, totalBytes: t.totalBytes, intervalMBps: +mbps.toFixed(2), avgMBps: +avg.toFixed(2), concurrentNow: c.total, sameAccountNow: c.sameAccount })
+    },
+    end(ok: boolean, err?: string) {
+      const seconds = Math.max(0.001, (now() - startedAt) / 1000)
+      const bytes = ok ? a.bytes : held
+      const mbps = bytes / MB / seconds
+      const fields = { ...base(), bytes, totalBytes: a.bytes, seconds: Math.round(seconds), MBps: +mbps.toFixed(2) }
+      if (ok) {
+        a.logLine(`upload: ${(bytes / 1e9).toFixed(2)} GB in ${Math.round(seconds)} s = ${mbps.toFixed(1)} MB/s (${a.account}; ${peak} upload(s) at once at the peak, ${peakSameAccount} on ${a.account})`)
+        log('info', 'upload: done', fields)
+      } else {
+        log('warn', 'upload: failed', { ...fields, err: (err ?? '').slice(0, 200) })
+      }
+    },
+  }
+}
+
 /** Runs `fn` holding one stage of the job (ctx.gate), so no two jobs run the same stage at once. */
 type Gated = <T>(stage: GateStage, fn: () => Promise<T>) => Promise<T>
 
@@ -319,9 +411,11 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
   const logLine = (line: string) => { jobs.appendLog(jobId, line); emit({ type: 'log', line }) }
   const setStatus = (status: SseMessage['status']) => { jobs.setStatus(jobId, status!); emit({ type: 'status', status }) }
   const scene = job.style === 'scene'
-  const gated: Gated = (stage, fn) => ctx.gate.run(stage, jobId, fn, (holder) => {
-    const other = jobs.get(holder)
-    logLine(`waiting for the ${stage} stage: ${other?.title ? `"${other.title}"` : `job ${holder}`} is in it`)
+  const gated: Gated = (stage, fn) => ctx.gate.run(stage, jobId, fn, (holders) => {
+    const names = holders.map((h) => { const other = jobs.get(h); return other?.title ? `"${other.title}"` : `job ${h}` })
+    logLine(holders.length > 1
+      ? `waiting for the ${stage} stage: all ${holders.length} slots are taken (${names.join(', ')})`
+      : `waiting for the ${stage} stage: ${names[0] ?? 'another job'} is in it`)
   })
   /** How far the job got: a scene job that fails while rendering or uploading keeps its work dir. */
   let stage: 'download' | 'render' | 'upload' | 'done' = 'download'
@@ -397,19 +491,30 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
     setStatus('uploading')
     // A tracked job names the Google project (account) it was handed out for; UI jobs use the primary.
     const acct = ctx.accountFor(job.meta?.account)
+    // The account whose token this upload really uses (a shared job falls back to the primary when no shared client is set).
+    const account: UploadAccount = acct.store === ctx.tokensShared ? 'shared' : 'primary'
     const getToken: TokenGetter = (o) => getValidAccessToken(acct.store, acct.google, o)
     const { videoId, videoUrl, privacyApplied } = await gated('upload', async () => {
       // Start with a token good for most of an hour (fails fast if the account is disconnected);
       // the upload takes a current token for every chunk after that.
       await getToken({ minValidMs: UPLOAD_MIN_VALID_MS })
-      return uploadVideo(
-        {
-          getToken, filePath: outFile, title: finalTitle,
-          description: describeJob(job, pageUrl),
-          privacy: job.privacy, categoryId: config.youtubeCategoryId, onLog: logLine,
-        },
-        (p) => emit({ type: 'progress', phase: 'upload', percent: p }),
-      )
+      const meter = makeUploadMeter(ctx, { jobId, account, bytes: statSync(outFile).size, logLine })
+      try {
+        const r = await uploadVideo(
+          {
+            getToken, filePath: outFile, title: finalTitle,
+            description: describeJob(job, pageUrl),
+            privacy: job.privacy, categoryId: config.youtubeCategoryId, onLog: logLine,
+            onThroughput: (t) => meter.throughput(t),
+          },
+          (p) => { meter.progress(p); emit({ type: 'progress', phase: 'upload', percent: p }) },
+        )
+        meter.end(true)
+        return r
+      } catch (e: any) {
+        meter.end(false, String(e?.message || e))
+        throw e
+      }
     })
     jobs.setResult(jobId, videoId, videoUrl, privacyApplied, job.style)
     jobs.markDescriptionSynced(jobId) // uploaded with today's description: nothing for the backfill to do
