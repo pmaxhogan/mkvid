@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { DESCRIPTION_FORMAT_SINCE } from '../lib/describe.js'
 import { isSetJob, isTrackJob, type Job, type JobMeta, type JobStatus, type Privacy, type SetJob, type TrackJob, type WaveStyle } from '../types.js'
 
 const RUNNING: JobStatus[] = ['downloading', 'transcoding', 'uploading', 'queued']
@@ -81,13 +82,14 @@ export function makeJobsRepo(db: Database.Database) {
     /**
      * tracked uploads still on YouTube whose description the backfill has not
      * brought up to date yet, oldest first. `shared` = uploaded through the
-     * shared account; everything else went through the primary.
+     * shared account; everything else went through the primary. A job synced
+     * before DESCRIPTION_FORMAT_SINCE (describe.ts) is due again.
      */
     descriptionBackfillPending(account: 'primary' | 'shared'): Job[] {
       return (db.prepare(`SELECT * FROM jobs WHERE status='done' AND video_id IS NOT NULL AND video_deleted_at IS NULL
-        AND description_synced_at IS NULL AND meta IS NOT NULL AND json_extract(meta, '$.origin')='tracked'
+        AND (description_synced_at IS NULL OR description_synced_at < ?) AND meta IS NOT NULL AND json_extract(meta, '$.origin')='tracked'
         AND (CASE WHEN json_extract(meta, '$.account')='shared' THEN 'shared' ELSE 'primary' END)=?
-        ORDER BY created_at ASC`).all(account) as any[]).map(row)
+        ORDER BY created_at ASC`).all(DESCRIPTION_FORMAT_SINCE, account) as any[]).map(row)
     },
     markDescriptionSynced(id: string) {
       db.prepare('UPDATE jobs SET description_synced_at=@d WHERE id=@id').run({ id, d: now() })

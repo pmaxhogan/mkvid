@@ -3,7 +3,7 @@ import Database from 'better-sqlite3'
 import { migrate } from '../src/db/index.js'
 import { makeJobsRepo } from '../src/db/jobs.js'
 import { makeKvCache } from '../src/db/kv.js'
-import { describeJob, recordingLink } from '../src/lib/describe.js'
+import { chapterLines, chapterTime, describeJob, recordingLink } from '../src/lib/describe.js'
 import { isMkvidDescription, runDescriptionBackfill, quotaDayStart, unitsFor, type VideoSnippet, type VideosApi, type BackfillOptions } from '../src/lib/description-backfill.js'
 import { parsePageUrl } from '../src/lib/ytdlp.js'
 import { YouTubeHttpError } from '../src/lib/youtube.js'
@@ -197,5 +197,38 @@ describe('parseArgs', () => {
     expect(parseArgs(['--apply', '--account', 'shared', '--limit-shared', '10'])).toMatchObject({ apply: true, accounts: ['shared'], limit: { shared: 10 } })
     expect(() => parseArgs(['--apply', '--offline'])).toThrow()
     expect(() => parseArgs(['--bogus'])).toThrow()
+  })
+})
+
+describe('chapters', () => {
+  const t = (cueSeconds: number | null, artist: string | null, title: string | null, o: { layered?: boolean; isId?: boolean } = {}) => ({ cueSeconds, artist, title, artworkUrl: null, isId: o.isId ?? false, layered: o.layered })
+  it('times: m:ss, then h:mm:ss', () => {
+    expect([0, 65, 3599, 3600, 3725].map(chapterTime)).toEqual(['0:00', '1:05', '59:59', '1:00:00', '1:02:05'])
+  })
+  it('one line per track; a w/ row joins its track; the first starts at 0:00', () => {
+    expect(chapterLines([t(3, 'A', 'One'), t(180, 'B', 'Two'), t(null, 'C', 'Three', { layered: true }), t(3700, 'D', 'Four')])).toEqual([
+      '0:00 A - One',
+      '3:00 B - Two w/ C - Three',
+      '1:01:40 D - Four',
+    ])
+  })
+  it('an Intro before a late first track; IDs; a track under 10 s after the last joins it; no cue = left out with its w/ rows', () => {
+    expect(chapterLines([t(60, 'A', 'One'), t(65, 'B', 'Two'), t(null, 'X', 'Gone'), t(null, 'Y', 'W', { layered: true }), t(200, null, null, { isId: true }), t(300, 'ID', 'ID', { isId: true }), t(400, '<x>', 'y')])).toEqual([
+      '0:00 Intro',
+      '1:00 A - One / B - Two',
+      '3:20 ID',
+      '5:00 ID - ID',
+      '6:40 ‹x› - y',
+    ])
+  })
+  it('fewer than 3 chapters, or no list: none; describeJob adds them only for a verified list', () => {
+    expect(chapterLines([t(0, 'A', 'One'), t(100, 'B', 'Two')])).toEqual([])
+    expect(chapterLines(undefined)).toEqual([])
+    const meta = { origin: 'tracked', requestId: 'r', setUrl: 'https://www.1001tracklists.com/tracklist/x/y.html', sourceUrl: 'https://soundcloud.com/a/b', lastCueSeconds: 300, artistName: 'A', tracks: [t(0, 'A', 'One'), t(100, 'B', 'Two'), t(200, 'C', 'Three')], tracksTrusted: true } as JobMeta
+    const d = describeJob({ url: 'https://soundcloud.com/a/b', meta })
+    expect(d.split('\n')).toEqual(['Tracklist: https://www.1001tracklists.com/tracklist/x/y.html', 'Recording: https://soundcloud.com/a/b', '', 'Tracks', '0:00 A - One', '1:40 B - Two', '3:20 C - Three'])
+    expect(isMkvidDescription(d, { url: 'https://soundcloud.com/a/b', meta })).toBe(true)
+    expect(isMkvidDescription(d + '\nmy own note', { url: 'https://soundcloud.com/a/b', meta })).toBe(false)
+    expect(describeJob({ url: 'https://soundcloud.com/a/b', meta: { ...meta, tracksTrusted: false } as JobMeta })).not.toContain('Tracks')
   })
 })

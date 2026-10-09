@@ -18,7 +18,7 @@
  * (anything but the old or the new template) is left alone and reported.
  */
 import type { Job, KVCache, UploadAccount } from '../types.js'
-import { describeJob, recordingLink } from './describe.js'
+import { CHAPTERS_HEADING, describeJob, recordingLink } from './describe.js'
 import { withAuthRetry, YouTubeHttpError, type TokenGetter } from './youtube.js'
 
 export const LIST_COST = 1
@@ -94,6 +94,7 @@ export function quotaDayStart(nowMs = Date.now()): number {
 }
 
 const LEGACY_PARAGRAPH = 'Rendered by mkvid for tracked'
+const CHAPTER_LINE = /^\d+:\d{2}(?::\d{2})? \S/
 
 /**
  * Did mkvid write this description (any version of describeJob for this
@@ -105,7 +106,10 @@ export function isMkvidDescription(description: string, job: Pick<Job, 'url' | '
   const lines = text.split('\n')
   if (job.meta?.origin !== 'tracked' || lines[0] !== `Tracklist: ${job.meta.setUrl}` || !lines[1]?.startsWith('Recording: ')) return false
   const rest = lines.slice(2).join('\n').trim()
-  return rest === '' || (rest.startsWith(LEGACY_PARAGRAPH) && !rest.includes('\n'))
+  if (rest === '' || (rest.startsWith(LEGACY_PARAGRAPH) && !rest.includes('\n'))) return true
+  // The chapter list (describe.ts chapterLines): the heading, then one timestamped line per chapter.
+  const [heading, ...chapters] = rest.split('\n')
+  return heading === CHAPTERS_HEADING && chapters.length > 0 && chapters.every((l) => CHAPTER_LINE.test(l))
 }
 
 const SOUNDCLOUD_API = /^https?:\/\/api\.soundcloud\.com\/tracks\/\d+/i

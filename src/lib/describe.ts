@@ -1,4 +1,4 @@
-import type { Job, TrackedTrackMeta } from '../types.js'
+import type { Job, TrackedTrack, TrackedTrackMeta } from '../types.js'
 import { UPLOAD_PREFIX } from './upload.js'
 
 const HEARTHIS_PAGE = /^https?:\/\/(?:www\.)?hearthis\.at\/(?!embed\/)[^/]+\/[^/]+/i
@@ -24,9 +24,12 @@ export function recordingLink(job: Pick<Job, 'url' | 'meta'>, pageUrl?: string |
  */
 export function describeJob(job: Pick<Job, 'url' | 'meta'>, pageUrl?: string | null): string {
   if (job.meta?.origin === 'tracked') {
+    // Chapters from a verified list only (names go out to the public, like the scene renders).
+    const chapters = job.meta.tracksTrusted === true ? chapterLines(job.meta.tracks) : []
     return [
       `Tracklist: ${job.meta.setUrl}`,
       `Recording: ${recordingLink(job, pageUrl)}`,
+      ...(chapters.length ? ['', CHAPTERS_HEADING, ...chapters] : []),
     ].join('\n')
   }
   if (job.meta?.origin === 'tracked-track') return describeTrack(job.meta, recordingLink(job, pageUrl))
@@ -90,3 +93,94 @@ export function trackVideoTitle(artist: string | null | undefined, title: string
   }
   return out.trimEnd() + '…'
 }
+
+/** The line above a set video's chapter list. */
+export const CHAPTERS_HEADING = 'Tracks'
+/** YouTube's rules for chapters: the first at 0:00, at least 3, each at least 10 s long. */
+const MIN_CHAPTERS = 3
+const MIN_CHAPTER_SECONDS = 10
+const MAX_LABEL = 120
+/** The chapter lines stop before the description passes this (YouTube allows 5000). */
+const MAX_CHAPTER_CHARS = 4500
+
+/** `m:ss`, or `h:mm:ss` from an hour on. */
+export function chapterTime(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const ss = String(s % 60).padStart(2, '0')
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
+}
+
+function chapterText(s: string | null | undefined): string {
+  return String(s ?? '').replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim().replace(/</g, '‹').replace(/>/g, '›')
+}
+
+function trackLabel(t: TrackedTrack): string {
+  const a = chapterText(t.artist)
+  const ti = chapterText(t.title)
+  if (!a && !ti) return 'ID'
+  return `${a || 'ID'} - ${ti || 'ID'}`
+}
+
+function clipLabel(label: string): string {
+  if (label.length <= MAX_LABEL) return label
+  let out = ''
+  for (const ch of label) {
+    if (out.length + ch.length > MAX_LABEL - 1) break
+    out += ch
+  }
+  return out.trimEnd() + '…'
+}
+
+/**
+ * A set video's chapters, one line per track: `<time> <Artist - Title>`. A
+ * "w/" row (layered) joins the track it plays over (`A - T w/ B - U`); a row
+ * without a cue is left out (and so are the w/ rows on it). YouTube only shows
+ * chapters that start at 0:00, number at least 3 and last at least 10 s each,
+ * in order: a first track later than 0:10 gets an "Intro" chapter before it
+ * (earlier, it starts at 0:00), and a track less than 10 s after the one
+ * before (or out of order) joins that one (`A - T / B - U`). Fewer than 3
+ * chapters: none ([]).
+ */
+export function chapterLines(tracks: readonly TrackedTrack[] | null | undefined): string[] {
+  if (!Array.isArray(tracks)) return []
+  const chapters: Array<{ at: number; label: string }> = []
+  let baseSkipped = false
+  for (const t of tracks) {
+    if (!t) continue
+    const cue = typeof t.cueSeconds === 'number' && Number.isFinite(t.cueSeconds) && t.cueSeconds >= 0 ? t.cueSeconds : null
+    const last = chapters[chapters.length - 1]
+    if (t.layered) {
+      if (last && !baseSkipped) last.label += ` w/ ${trackLabel(t)}`
+      continue
+    }
+    if (cue === null) { baseSkipped = true; continue }
+    baseSkipped = false
+    if (last && cue < last.at + MIN_CHAPTER_SECONDS) {
+      last.label += ` / ${trackLabel(t)}`
+      continue
+    }
+    chapters.push({ at: cue, label: trackLabel(t) })
+  }
+  if (chapters.length === 0) return []
+  if (chapters[0]!.at < MIN_CHAPTER_SECONDS) chapters[0]!.at = 0
+  else chapters.unshift({ at: 0, label: 'Intro' })
+  if (chapters.length < MIN_CHAPTERS) return []
+  const lines: string[] = []
+  let chars = 0
+  for (const c of chapters) {
+    const line = `${chapterTime(c.at)} ${clipLabel(c.label)}`
+    if (chars + line.length + 1 > MAX_CHAPTER_CHARS) break
+    lines.push(line)
+    chars += line.length + 1
+  }
+  return lines.length >= MIN_CHAPTERS ? lines : []
+}
+
+/**
+ * Unix ms: when describeJob's output last changed (set videos got chapters).
+ * A description synced before this is brought up to date again by the
+ * backfill (db/jobs.ts descriptionBackfillPending).
+ */
+export const DESCRIPTION_FORMAT_SINCE = Date.parse('2026-10-09T15:30:00Z')
