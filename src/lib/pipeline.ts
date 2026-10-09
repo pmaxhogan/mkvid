@@ -6,8 +6,8 @@ import type { VizInput } from '../viz/types.js'
 import { renderScene, hashInput, legacyHashInput, rebasePath, rebaseVizInput, readManifest, writeManifest, sceneCodeVersion, VIZ_AUDIO_ARGS } from '../viz/render.js'
 import { downloadSetArtwork, fetchArtwork, resolveVizTracks, vizTracksFromTracked } from '../viz/assets.js'
 import { previewClipError, unverifiedTrackedScene } from './tracked.js'
-import { renderTrackVideo } from './track-render.js'
-import { downloadAudio } from './ytdlp.js'
+import { renderTrackVideo, resolveTrackNames } from './track-render.js'
+import { downloadAudio, type SourceMeta } from './ytdlp.js'
 import { probeAudio } from './probe.js'
 import { chooseFps, chooseAudioArgs, renderVideo } from './ffmpeg.js'
 import { getValidAccessToken, UPLOAD_MIN_VALID_MS } from './google-oauth.js'
@@ -464,6 +464,7 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
     setStatus('downloading')
     let file: string, title: string
     let pageUrl: string | null = null
+    let sourceMeta: SourceMeta | null = null
     const resumed = job.style === 'scene' ? readSourceRecord(workDir) : null
     if (resumed) {
       ({ file, title, pageUrl } = resumed)
@@ -480,7 +481,7 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
       logLine(`using uploaded file ${name}`)
       emit({ type: 'progress', phase: 'download', percent: 100 })
     } else {
-      ({ file, title, pageUrl } = await gated('download', () => downloadAudio(
+      ({ file, title, pageUrl, sourceMeta } = await gated('download', () => downloadAudio(
         { ytdlpPath: config.ytdlpPath, url: job.url, workDir },
         (p) => emit({ type: 'progress', phase: 'download', percent: p }), logLine,
       )))
@@ -491,7 +492,20 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
       const current = jobs.get(jobId)?.meta ?? job.meta
       jobs.setMeta(jobId, { ...current, recordingUrl: pageUrl })
     }
-    const finalTitle = job.title || title
+    let finalTitle = job.title || title
+    // A track upload is always named: tracked's names, else the source's (a pre-save saved by
+    // id alone has none). Kept on the job, so the report back to tracked carries them.
+    let trackNames: { artist: string | null; title: string } | null = null
+    if (track) {
+      const n = resolveTrackNames(track, sourceMeta, finalTitle)
+      trackNames = n
+      if (n.from !== 'tracked') logLine(`track: named from the ${n.from === 'source' ? "source's metadata" : 'download'}: ${n.artist ? `${n.artist} - ` : ''}${n.title}`)
+      if (!job.title) finalTitle = n.artist ? `${n.artist} - ${n.title}` : n.title
+      const current = jobs.get(jobId)?.meta ?? job.meta
+      if (current?.origin === 'tracked-track') {
+        jobs.setMeta(jobId, { ...current, artist: current.artist ?? n.artist, title: current.title ?? n.title, artworkUrl: current.artworkUrl ?? sourceMeta?.thumbnail ?? null })
+      }
+    }
     jobs.setTitle(jobId, finalTitle)
 
     // 2. probe
@@ -516,7 +530,7 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
       const artworkPath = await trackArtwork(ctx, job, track, dir, logLine)
       // Its own slot: a track never waits behind a scene render (stage-gate.ts, tracked.ts pollTrackUploads).
       const r = await gated('track-render', () => renderTrackVideo(
-        { ffmpegPath: config.ffmpegPath, audioPath: file, durationSeconds: duration, artworkPath, artist: track.artist, title: track.title, dir, outFile },
+        { ffmpegPath: config.ffmpegPath, audioPath: file, durationSeconds: duration, artworkPath, artist: trackNames!.artist, title: trackNames!.title, dir, outFile },
         (p) => emit({ type: 'progress', phase: 'transcode', percent: p }), logLine,
       ))
       logLine(`track: rendered with ${r.encoder}`)

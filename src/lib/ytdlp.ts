@@ -85,16 +85,46 @@ export function probePageUrl(opts: { ytdlpPath: string; url: string; timeoutMs?:
   })
 }
 
+/** Where downloadAudio has yt-dlp write the recording's own metadata (one JSON line), next to PAGE_URL_FILE. */
+export const SOURCE_META_FILE = join('ytdlp', 'meta.json')
+
+/** What the source says about the recording: names and its thumbnail URL (any may be missing). */
+export interface SourceMeta {
+  title: string | null
+  track: string | null
+  artist: string | null
+  creator: string | null
+  uploader: string | null
+  thumbnail: string | null
+}
+
+/** The JSON line yt-dlp printed for SOURCE_META_FILE; null when unreadable. Non-string fields become null. */
+export function parseSourceMeta(text: string): SourceMeta | null {
+  const line = text.split('\n').map((l) => l.trim()).filter(Boolean).pop()
+  if (!line) return null
+  try {
+    const j = JSON.parse(line)
+    if (!j || typeof j !== 'object') return null
+    const s = (k: string) => (typeof j[k] === 'string' && j[k].trim() && j[k] !== 'NA' ? (j[k] as string).trim() : null)
+    return { title: s('title'), track: s('track'), artist: s('artist'), creator: s('creator'), uploader: s('uploader'), thumbnail: s('thumbnail') }
+  } catch {
+    return null
+  }
+}
+
 export function downloadAudio(
   opts: { ytdlpPath: string; url: string; workDir: string },
   onProgress: (p: number) => void, onLog: (l: string) => void,
-): Promise<{ file: string; title: string; pageUrl: string | null }> {
+): Promise<{ file: string; title: string; pageUrl: string | null; sourceMeta: SourceMeta | null }> {
   return new Promise((resolve, reject) => {
     const pageFile = join(opts.workDir, PAGE_URL_FILE)
+    const metaFile = join(opts.workDir, SOURCE_META_FILE)
     rmSync(pageFile, { force: true })
+    rmSync(metaFile, { force: true })
     // --print-to-file (unlike --print) neither silences progress nor turns the download into a simulation.
     const args = ['--no-playlist', '--newline', '-f', 'bestaudio/best',
       '--print-to-file', 'after_move:webpage_url', pageFile,
+      '--print-to-file', 'after_move:%(.{title,track,artist,creator,uploader,thumbnail})j', metaFile,
       '-o', join(opts.workDir, '%(title)s.%(ext)s'), '--', opts.url]
     const p = spawn(opts.ytdlpPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let err = ''
@@ -114,7 +144,9 @@ export function downloadAudio(
       if (!picked) return reject(new Error('yt-dlp produced no audio file'))
       let pageUrl: string | null = null
       try { pageUrl = parsePageUrl(readFileSync(pageFile, 'utf8')) } catch { /* not written: no page URL */ }
-      resolve({ ...picked, pageUrl })
+      let sourceMeta: SourceMeta | null = null
+      try { sourceMeta = parseSourceMeta(readFileSync(metaFile, 'utf8')) } catch { /* not written: no metadata */ }
+      resolve({ ...picked, pageUrl, sourceMeta })
     })
   })
 }

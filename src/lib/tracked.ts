@@ -116,7 +116,8 @@ export interface TrackedClient {
   trackClaim(accounts: readonly UploadAccount[]): Promise<TrackRequest | null>
   /** Attach the job to the claim, and renew the claim. */
   trackJob(id: number, jobId: string): Promise<void>
-  trackComplete(input: { id: number; videoId: string; videoUrl: string; privacy: string | null; jobId: string }): Promise<{ status?: string }>
+  /** artist / title / artworkUrl: the names the video was made with and the source's artwork, for a pre-save that had none. */
+  trackComplete(input: { id: number; videoId: string; videoUrl: string; privacy: string | null; jobId: string; artist?: string | null; title?: string | null; artworkUrl?: string | null }): Promise<{ status?: string }>
   trackFail(input: { id: number; error: string; permanent: boolean; jobId: string | null }): Promise<void>
 }
 
@@ -250,7 +251,7 @@ export async function reportJobToTracked(ctx: AppContext, job: Job, client: Trac
           // The style the video was made with: tracked's "Recreate all old-style videos" goes by it.
           style: job.uploadStyle ?? job.style,
         })
-        : await client.trackComplete({ id: meta.trackRequestId, videoId: job.videoId, videoUrl: job.videoUrl, privacy, jobId: job.id })
+        : await client.trackComplete({ id: meta.trackRequestId, videoId: job.videoId, videoUrl: job.videoUrl, privacy, jobId: job.id, artist: meta.artist, title: meta.title, artworkUrl: meta.artworkUrl })
       log('info', 'tracked: delivered', { jobId: job.id, ...ref, videoId: job.videoId, result: r.status ?? null })
     } else {
       const error = job.status === 'interrupted' ? 'mkvid restarted mid-job' : (job.error || 'failed')

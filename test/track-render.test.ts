@@ -12,6 +12,7 @@ import {
   textPositions,
   trackFontsDir,
   TRACK_LAYOUT,
+  resolveTrackNames,
 } from '../src/lib/track-render.js'
 
 const graphOf = (args: string[]) => args[args.indexOf('-filter_complex') + 1]!
@@ -180,5 +181,27 @@ describe('buildTrackVideoArgs', () => {
       expect(a).toContain('-r 30')
       expect(a.endsWith('-f mp4 /w/out.mp4')).toBe(true)
     }
+  })
+})
+
+describe('resolveTrackNames: a track video is never "Unknown track"', () => {
+  const src = (o: Partial<{ title: string; track: string; artist: string; creator: string; uploader: string }>) => ({ title: null, track: null, artist: null, creator: null, uploader: null, ...o })
+  it("tracked's names win", () => {
+    expect(resolveTrackNames({ artist: 'A', title: 'T' }, src({ title: 'X - Y' }), 'f')).toEqual({ artist: 'A', title: 'T', from: 'tracked' })
+  })
+  it('a pre-save saved by id alone: an "Artist - Title" source title is split (the SoundCloud case)', () => {
+    expect(resolveTrackNames({ artist: null, title: null }, src({ title: "Beltran - Smack Yo' (Danny Avila Remix)", track: "Beltran - Smack Yo' (Danny Avila Remix)", artist: 'DANNY AVILA REMIXES', uploader: 'DANNY AVILA REMIXES' }), 'f')).toEqual({
+      artist: 'Beltran',
+      title: "Smack Yo' (Danny Avila Remix)",
+      from: 'source',
+    })
+  })
+  it('no dash: the track field and the artist field, then the title and the uploader', () => {
+    expect(resolveTrackNames({ artist: null, title: null }, src({ title: 'whatever', track: 'Song', artist: 'Band' }), 'f')).toEqual({ artist: 'Band', title: 'Song', from: 'source' })
+    expect(resolveTrackNames({ artist: null, title: null }, src({ title: 'Song', uploader: 'someone' }), 'f')).toEqual({ artist: 'someone', title: 'Song', from: 'source' })
+  })
+  it('no metadata: the download title, split when it can be', () => {
+    expect(resolveTrackNames({ artist: null, title: null }, null, 'Foo – Bar')).toEqual({ artist: 'Foo', title: 'Bar', from: 'fallback' })
+    expect(resolveTrackNames({ artist: null, title: null }, src({}), 'just a name')).toEqual({ artist: null, title: 'just a name', from: 'fallback' })
   })
 })

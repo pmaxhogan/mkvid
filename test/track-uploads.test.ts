@@ -190,7 +190,7 @@ describe('reportJobToTracked: the endpoint goes by the job origin', () => {
     expect(await reportJobToTracked(ctx, finished(ctx, trackMetaFrom(track), true, 'j-track'), client)).toBe(true)
     expect(await reportJobToTracked(ctx, finished(ctx, setMeta, true, 'j-set'), client)).toBe(true)
     expect(client.calls).toEqual([
-      ['trackComplete', { id: 7, videoId: 'abcdefghijk', videoUrl: 'https://youtu.be/abcdefghijk', privacy: 'public', jobId: 'j-track' }],
+      ['trackComplete', { id: 7, videoId: 'abcdefghijk', videoUrl: 'https://youtu.be/abcdefghijk', privacy: 'public', jobId: 'j-track', artist: 'Odd Mob', title: 'Tobehonest (Where Ya At)', artworkUrl: 'https://img.example/a.jpg' }],
       ['complete', { id: 'req-1', videoId: 'abcdefghijk', videoUrl: 'https://youtu.be/abcdefghijk', privacy: 'public', jobId: 'j-set', style: 'static' }],
     ])
     expect(ctx.jobs.get('j-track')!.meta!.reported).toBe(true)

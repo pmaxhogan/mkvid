@@ -155,6 +155,43 @@ export function fitText(text: string, o: { widthPx: number; maxPx: number; minPx
   return { lines: kept, px }
 }
 
+/** "Artist - Title" split at the first " - " (also " – " / " — "); null when there is none. */
+export function splitArtistTitle(s: string | null | undefined): { artist: string; title: string } | null {
+  const t = cleanText(s)
+  const m = t.match(/^(.+?)\s+[-–—]\s+(.+)$/)
+  return m ? { artist: m[1]!.trim(), title: m[2]!.trim() } : null
+}
+
+/**
+ * The names a track video is drawn and titled with. tracked's names win; a
+ * pre-save saved by id alone has none, so they come from the source's
+ * metadata (yt-dlp: `track`/`artist`, else an "Artist - Title" title, else
+ * the title and the uploader), and last from `fallbackTitle` (the download's
+ * title, never empty). A track video is never "Unknown track".
+ */
+export function resolveTrackNames(
+  given: { artist: string | null; title: string | null },
+  source: { title: string | null; track: string | null; artist: string | null; creator: string | null; uploader: string | null } | null,
+  fallbackTitle: string,
+): { artist: string | null; title: string; from: 'tracked' | 'source' | 'fallback' } {
+  const ga = cleanText(given.artist) || null
+  const gt = cleanText(given.title) || null
+  if (gt) return { artist: ga, title: gt, from: 'tracked' }
+  if (source) {
+    // SoundCloud puts "Artist - Title" in track and title, and the uploader (a label, a remixer) in
+    // artist: a dash in the name beats the artist field.
+    const name = cleanText(source.track) || cleanText(source.title) || null
+    const split = splitArtistTitle(name)
+    const title = split?.title || name
+    if (title) {
+      const artist = ga || split?.artist || cleanText(source.artist) || cleanText(source.creator) || cleanText(source.uploader) || null
+      return { artist, title, from: 'source' }
+    }
+  }
+  const split = splitArtistTitle(fallbackTitle)
+  return { artist: ga || split?.artist || null, title: split?.title || cleanText(fallbackTitle) || 'Untitled', from: 'fallback' }
+}
+
 export interface TrackText {
   artist: { lines: string[]; px: number; font: string }
   title: { lines: string[]; px: number; font: string }

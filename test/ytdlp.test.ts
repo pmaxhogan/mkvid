@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseDownloadPercent, parseDurationOutput, pickDownloadedFile } from '../src/lib/ytdlp.js'
+import { parseDownloadPercent, parseDurationOutput, pickDownloadedFile, parseSourceMeta } from '../src/lib/ytdlp.js'
 
 describe('pickDownloadedFile', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'mkvid-pick-'))
@@ -47,5 +47,15 @@ describe('parseDownloadPercent', () => {
   })
   it('returns null for non-progress lines', () => {
     expect(parseDownloadPercent('[info] Downloading 1 format(s)')).toBeNull()
+  })
+})
+
+describe('parseSourceMeta', () => {
+  it('reads the last JSON line; NA, empty and non-string fields are null', () => {
+    expect(parseSourceMeta('junk\n{"title":"A - B","track":null,"artist":"NA","uploader":"u","thumbnail":"https://i1.sndcdn.com/x-t500x500.jpg","creator":5}\n')).toEqual({
+      title: 'A - B', track: null, artist: null, creator: null, uploader: 'u', thumbnail: 'https://i1.sndcdn.com/x-t500x500.jpg',
+    })
+    expect(parseSourceMeta('')).toBeNull()
+    expect(parseSourceMeta('not json')).toBeNull()
   })
 })
