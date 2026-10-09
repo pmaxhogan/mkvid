@@ -7,6 +7,7 @@
 
 import type { Job } from '../types.js'
 import type { LiveProgress } from './sse.js'
+import type { GateStage } from './stage-gate.js'
 import { RENDER_SHARE } from '../viz/render.js'
 
 export type StageKey = 'download' | 'analyse' | 'render' | 'assemble' | 'upload'
@@ -26,7 +27,7 @@ export const STAGES: ReadonlyArray<Stage> = [
   { key: 'upload', label: 'Upload', weight: 29 },
 ]
 
-/** The old styles (static, waveform): one ffmpeg pass, no analysis or assembly; much shorter than a scene render. */
+/** The ffmpeg styles (static, waveform, track): one ffmpeg pass, no analysis or assembly; much shorter than a scene render. */
 export const STAGES_PLAIN: ReadonlyArray<Stage> = [
   { key: 'download', label: 'Download', weight: 5 },
   { key: 'render', label: 'Transcode', weight: 60 },
@@ -45,7 +46,12 @@ const ATTEMPT_RE = /^(render failed: |resuming after a restart|retry requested$|
 export interface StageView { key: StageKey; label: string; weight: number; state: 'done' | 'active' | 'pending'; progress: number | null }
 export interface RenderProgress {
   jobId: string
+  /** tracked's mkvid_requests.id of a set; null for anything else. */
   requestId: string | null
+  /** What tracked queued: a set (`requestId`), a track upload (`trackRequestId`), or null (a web UI job). */
+  kind: 'set' | 'track' | null
+  /** tracked's track_uploads.id of a track upload; null for anything else. */
+  trackRequestId: number | null
   title: string | null
   style: string
   status: Job['status']
@@ -77,7 +83,9 @@ const lastMatch = (lines: string[], re: RegExp): RegExpExecArray | null => {
   return null
 }
 
-export function describeProgress(job: Job, logs: { viz: string[]; download: string | null }, live: LiveProgress | null, waiting: StageKey | null = null): RenderProgress {
+export function describeProgress(job: Job, logs: { viz: string[]; download: string | null }, live: LiveProgress | null, gateWaiting: GateStage | null = null): RenderProgress {
+  // A track waiting for its own render slot shows as waiting for "render" like any other.
+  const waiting: StageKey | null = gateWaiting === 'track-render' ? 'render' : gateWaiting
   let cut = -1
   logs.viz.forEach((l, i) => { if (ATTEMPT_RE.test(l)) cut = i })
   const viz = logs.viz.slice(cut + 1).filter((l) => l.startsWith('viz:'))
@@ -133,7 +141,9 @@ export function describeProgress(job: Job, logs: { viz: string[]; download: stri
   const fraction = stages.reduce((n, s) => n + s.weight * (s.progress ?? 0), 0) / total
   return {
     jobId: job.id,
-    requestId: job.meta?.requestId ?? null,
+    requestId: job.meta?.origin === 'tracked' ? job.meta.requestId : null,
+    kind: job.meta?.origin === 'tracked' ? 'set' : job.meta?.origin === 'tracked-track' ? 'track' : null,
+    trackRequestId: job.meta?.origin === 'tracked-track' ? job.meta.trackRequestId : null,
     title: job.title,
     style: job.style,
     status: job.status,

@@ -1,11 +1,12 @@
 import { mkdirSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync, renameSync, statSync, statfsSync } from 'node:fs'
 import { join, basename, extname } from 'node:path'
 import type { AppContext } from '../context.js'
-import type { Job, SseMessage, UploadAccount } from '../types.js'
+import type { Job, SseMessage, TrackedTrackMeta, UploadAccount } from '../types.js'
 import type { VizInput } from '../viz/types.js'
 import { renderScene, hashInput, legacyHashInput, rebasePath, rebaseVizInput, readManifest, writeManifest, sceneCodeVersion, VIZ_AUDIO_ARGS } from '../viz/render.js'
-import { downloadSetArtwork, resolveVizTracks, vizTracksFromTracked } from '../viz/assets.js'
-import { unverifiedTrackedScene } from './tracked.js'
+import { downloadSetArtwork, fetchArtwork, resolveVizTracks, vizTracksFromTracked } from '../viz/assets.js'
+import { previewClipError, unverifiedTrackedScene } from './tracked.js'
+import { renderTrackVideo } from './track-render.js'
 import { downloadAudio } from './ytdlp.js'
 import { probeAudio } from './probe.js'
 import { chooseFps, chooseAudioArgs, renderVideo } from './ffmpeg.js'
@@ -249,8 +250,8 @@ export function adoptKeptWork(ctx: AppContext, job: Job, workDir: string, logLin
     renameSync(oldDir, workDir)
     rmSync(join(workDir, VIZ_DIR, KEPT_FILE), { force: true })
     rmSync(join(workDir, VIZ_DIR, 'resumes.json'), { force: true })
-    const sameTracks = JSON.stringify([old.meta?.tracks ?? null, old.meta?.tracksTrusted ?? null]) ===
-      JSON.stringify([job.meta?.tracks ?? null, job.meta?.tracksTrusted ?? null])
+    const listOf = (j: Job) => j.meta?.origin === 'tracked' ? [j.meta.tracks ?? null, j.meta.tracksTrusted ?? null] : [null, null]
+    const sameTracks = JSON.stringify(listOf(old)) === JSON.stringify(listOf(job))
     if (!sameTracks) rmSync(join(workDir, VIZ_DIR, 'input.json'), { force: true })
     else rebaseKeptInput(oldDir, workDir)
     logLine(`reusing the kept work of failed job ${old.id}${sameTracks ? '' : ' (track list changed: scene input rebuilt)'}`)
@@ -345,13 +346,14 @@ async function renderSceneForJob(
     const setArtworkPath = job.url.startsWith(UPLOAD_PREFIX)
       ? null
       : await downloadSetArtwork({ ytdlpPath: config.ytdlpPath, ffmpegPath: config.ffmpegPath, url: job.url, outDir: vizDir }, logLine)
-    const planned = vizTracksFromTracked(job.meta?.tracks, { durationSeconds: a.duration })
+    const setMeta = job.meta?.origin === 'tracked' ? job.meta : null
+    const planned = vizTracksFromTracked(setMeta?.tracks, { durationSeconds: a.duration })
     const tracks = await resolveVizTracks(planned, config.viz.artworkCacheDir, { onLog: logLine })
     const withArt = tracks.filter((t) => t.artworkPath).length
     const named = tracks.filter((t) => t.artist || t.title).length
     logLine(`viz: ${tracks.length} track(s), ${named} named, ${withArt} with artwork; set artwork ${setArtworkPath ? 'found' : 'none'}`)
     const fresh: VizInput = {
-      audioPath: a.audioPath, durationSeconds: a.duration, setTitle: a.title, setArtist: job.meta?.artistName ?? null,
+      audioPath: a.audioPath, durationSeconds: a.duration, setTitle: a.title, setArtist: setMeta?.artistName ?? null,
       setArtworkPath, tracks, width, height, fps: config.viz.fps,
     }
     writeJson(join(vizDir, 'input.json'), fresh)
@@ -399,6 +401,32 @@ async function renderSceneWithRetries(
 }
 
 // ---------------------------------------------------------------------------
+// track style: one track upload from tracked
+
+/**
+ * Where a track job's own files go: a subdirectory, never the work dir
+ * itself (yt-dlp's file picker takes the first file there as the download).
+ */
+export const TRACK_DIR = 'track'
+
+/**
+ * The artwork a track video is drawn with: the source's thumbnail (yt-dlp,
+ * converted to jpg), else the 1001tracklists artwork tracked sent, else none
+ * (track-render draws a solid background).
+ */
+async function trackArtwork(ctx: AppContext, job: Job, meta: TrackedTrackMeta, dir: string, logLine: (l: string) => void): Promise<string | null> {
+  const { config } = ctx
+  const thumb = await downloadSetArtwork({ ytdlpPath: config.ytdlpPath, ffmpegPath: config.ffmpegPath, url: job.url, outDir: dir }, logLine)
+  if (thumb) { logLine('track: artwork from the source thumbnail'); return thumb }
+  if (meta.artworkUrl) {
+    const art = await fetchArtwork(meta.artworkUrl, config.viz.artworkCacheDir, { onLog: logLine })
+    if (art) { logLine('track: artwork from 1001tracklists'); return art }
+  }
+  logLine('track: no artwork, solid background')
+  return null
+}
+
+// ---------------------------------------------------------------------------
 
 export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
   const { jobs, config, hub } = ctx
@@ -411,6 +439,8 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
   const logLine = (line: string) => { jobs.appendLog(jobId, line); emit({ type: 'log', line }) }
   const setStatus = (status: SseMessage['status']) => { jobs.setStatus(jobId, status!); emit({ type: 'status', status }) }
   const scene = job.style === 'scene'
+  /** A tracked track upload (style `track`): a duration check, its own renderer, its own render slot. */
+  const track = job.meta?.origin === 'tracked-track' ? job.meta : null
   const gated: Gated = (stage, fn) => ctx.gate.run(stage, jobId, fn, (holders) => {
     const names = holders.map((h) => { const other = jobs.get(h); return other?.title ? `"${other.title}"` : `job ${h}` })
     logLine(holders.length > 1
@@ -425,6 +455,7 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
     // catches a job queued, or resumed, from before this rule).
     const unverified = unverifiedTrackedScene(job)
     if (unverified) throw new Error(unverified)
+    if (job.style === 'track' && !track) throw new Error('the track style renders tracked track uploads only')
     if (scene) {
       rmSync(join(workDir, VIZ_DIR, KEPT_FILE), { force: true }) // running again (retry): not a kept dir any more
       adoptKeptWork(ctx, job, workDir, logLine)
@@ -465,6 +496,11 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
 
     // 2. probe
     const { codec, duration } = await probeAudio(config.ffprobePath, file)
+    // 1001tracklists' players often carry only a preview: refuse a rip much shorter than the track (permanent for tracked).
+    if (track) {
+      const clip = previewClipError(duration, track.expectedDurationSeconds, track.minDurationRatio)
+      if (clip) throw new Error(clip)
+    }
     const width = Number(config.size.split('x')[0])
     const fps = chooseFps(job.style, width, duration)
 
@@ -475,6 +511,15 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
       stage = 'render'
       await renderSceneWithRetries(ctx, job, { workDir, audioPath: file, duration, codec, title: finalTitle, outFile },
         (p) => emit({ type: 'progress', phase: 'transcode', percent: p }), logLine, gated)
+    } else if (track) {
+      const dir = join(workDir, TRACK_DIR)
+      const artworkPath = await trackArtwork(ctx, job, track, dir, logLine)
+      // Its own slot: a track never waits behind a scene render (stage-gate.ts, tracked.ts pollTrackUploads).
+      const r = await gated('track-render', () => renderTrackVideo(
+        { ffmpegPath: config.ffmpegPath, audioPath: file, durationSeconds: duration, artworkPath, artist: track.artist, title: track.title, dir, outFile },
+        (p) => emit({ type: 'progress', phase: 'transcode', percent: p }), logLine,
+      ))
+      logLine(`track: rendered with ${r.encoder}`)
     } else {
       await gated('render', () => renderVideo(
         {
@@ -524,9 +569,9 @@ export async function runJob(ctx: AppContext, jobId: string): Promise<void> {
     }
     // Best-effort: add the upload to the configured playlist. A failure here (e.g.
     // token lacks the playlist scope) must not fail an already-successful upload.
-    // Sets from tracked go into tracked's own playlists instead — tracked adds
-    // them, and paying 50 units here as well would be a waste.
-    if (config.youtubePlaylistId && job.meta?.origin !== 'tracked') {
+    // Sets and track uploads from tracked go into tracked's own playlists
+    // instead — tracked adds them, and paying 50 units here as well would be a waste.
+    if (config.youtubePlaylistId && !job.meta) {
       try {
         await addToPlaylist(getToken, videoId, config.youtubePlaylistId)
         logLine(`added to playlist ${config.youtubePlaylistId}`)

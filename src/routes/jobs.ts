@@ -92,6 +92,7 @@ export function jobsRoutes(ctx: AppContext): Hono {
   app.post('/:id/retry', (c) => {
     const job = ctx.jobs.get(c.req.param('id'))
     if (!job) return c.json({ error: 'not_found' }, 404)
+    if (job.meta?.origin === 'tracked-track') return c.json({ error: 'tracked_job', detail: 'tracked retries track uploads itself' }, 409)
     if (job.style !== 'scene' || job.status !== 'failed') return c.json({ error: 'not_retryable', detail: 'only failed scene jobs can be retried' }, 409)
     if (job.meta?.origin === 'tracked') return c.json({ error: 'tracked_job', detail: 'tracked retries this request itself and reuses the kept work' }, 409)
     if (!isKeptWork(ctx, job.id)) return c.json({ error: 'nothing_kept', detail: 'the work dir is gone (expired or over VIZ_KEEP_GB); submit the set again' }, 409)

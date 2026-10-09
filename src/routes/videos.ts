@@ -14,9 +14,10 @@
  *
  *   GET /api/videos/render-progress
  *     → 200 { running: RenderProgress | null, jobs: RenderProgress[] }
- *       every job in flight (up to two, oldest first; each `waiting` for a
- *       stage the other holds, or null); `running` = the first, for trackeds
- *       from before two jobs ran at once
+ *       every job in flight (oldest first; each `waiting` for a stage another
+ *       job holds, or null; `kind` 'set' | 'track' | null, with `requestId`
+ *       for a set and `trackRequestId` for a track upload); `running` = the
+ *       first, for trackeds from before two jobs ran at once
  */
 
 import { Hono } from 'hono'

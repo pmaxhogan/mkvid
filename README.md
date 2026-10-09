@@ -94,6 +94,96 @@ when it is not ours to delete (final); `502`/`503` otherwise (tracked retries).
 Every upload records its style in `jobs.upload_style` (uploads from before the
 column were backfilled from `jobs.style`).
 
+## Track uploads (tracked)
+
+tracked also queues single **pre-saved tracks**: a track 1001tracklists has
+identified but has no YouTube link for, watched for a few days, with a link on
+a site yt-dlp can rip (SoundCloud, Bandcamp, hearthis.at, ...). mkvid rips,
+renders and uploads each one; tracked adds it to its "Track uploads" playlist
+and pushes "Track ripped and uploaded". Same pull model and bearer as sets,
+separate endpoints, separate job kind (`meta.origin = "tracked-track"`, style
+`track`), on by default (`TRACKED_TRACKS=0` turns claiming off; outcomes of
+track jobs already here are still delivered).
+
+On every poll, after the sets:
+
+1. **renew** the claim of the track job in flight: `POST /mkvid/track/job
+   { id, jobId }`;
+2. **claim** — only when no track job is queued or running here, every
+   finished one is delivered, a YouTube account is connected, and tracked's
+   `GET /mkvid/health` answers `trackUploads: true` (cached 10 min; an older
+   tracked is never asked): `POST /mkvid/track/claim { accounts }` →
+   `{ request: { id, presaveId, artist, title, artworkUrl, trackUrl,
+   sourceName, sourceUrl, expectedDurationSeconds, minDurationRatio, privacy,
+   account, attempts } | null }`. The job is attached right away
+   (`/mkvid/track/job`). A hearthis embed URL is resolved to its track page
+   first; a source that cannot be resolved becomes a failed job, reported like
+   any other;
+3. **run** it: yt-dlp download (same flags as sets) → ffprobe → **duration
+   check**: a rip shorter than `expectedDurationSeconds × minDurationRatio`
+   (0.8 when not sent; skipped when the expected length is unknown) fails with
+   `preview_clip: …`, which counts as permanent → artwork (the source's
+   thumbnail via yt-dlp, else `artworkUrl`, else a solid background) → render
+   (`track` style, below) → upload with the request's `privacy`, title
+   `<artist> - <title>` (≤ 100 characters, `<`/`>` replaced), description:
+
+       1001Tracklists: https://www.1001tracklists.com/track/…
+       Source (soundcloud): https://soundcloud.com/…
+
+       Uploaded by mkvid
+
+   and no playlist insert here (`YOUTUBE_PLAYLIST_ID` is for web UI jobs only;
+   tracked inserts into "Track uploads");
+4. **report**: `POST /mkvid/track/complete { id, videoId, videoUrl, privacy,
+   jobId }` (`privacy` = what YouTube applied) or `POST /mkvid/track/fail { id,
+   error, permanent, jobId }`. Durable like sets (`meta.reported`); a 404/409
+   from tracked drops the report.
+
+**Why a track never waits behind a set.** A set is claimed only when every
+stage slot it needs is free (`canClaim`), and a scene render holds the render
+slot for hours. Tracks have their own rule: at most one track job here at a
+time, claimed on any tick when there is none. It shares the **download** slot
+(a set's download takes a minute or two) and the **upload** slots
+(`UPLOAD_CONCURRENCY`; a track video is ~100–300 MB), but renders in a slot of
+its own (`track-render`), beside a scene render: one ffmpeg, a couple of
+cores and one NVENC session for a few minutes (~4× real time on the NAS
+beside a running scene render). A
+set claim sees the track job like any other job holding a stage. NVENC that
+fails to open for a track (e.g. a session limit while a scene encodes) falls
+back to libx264 for that render only, never disabling NVENC for the scene.
+
+Track jobs show `[track]` in the job list (linking the 1001tracklists track
+page), and `GET /api/videos/render-progress` lists them with `kind: "track"`
+and `trackRequestId` (sets: `kind: "set"`, `requestId`).
+
+## Track style
+
+`style: "track"` — tracked's track uploads only (not selectable for sets or
+web UI jobs). 1920×1080 @ 30 fps, ffmpeg only, two passes
+(`src/lib/track-render.ts`):
+
+1. **background** (one frame → `bg.png`): the artwork scaled to cover the
+   frame, blurred and darkened (a dark box under the artwork's spot, blurred
+   with it, becomes a soft drop shadow); the sharp 560 px square artwork on
+   the left with a hairline border; the artist (Inter Medium, 46 px, dimmed)
+   and the title (Inter Display Bold, up to 84 px, wrapped to two lines and
+   shrunk to fit, cut with … at 48 px) on the right, vertically centred; the
+   dim track of the progress bar. Without artwork: a dark solid background
+   and a full-width text column. Non-Latin titles use the bundled Noto face of
+   their script (JP, KR, Arabic, Hebrew, Thai, Devanagari). Text reaches
+   drawtext through files (`textfile=`, `expansion=none`), so no title needs
+   escaping; only the paths are escaped.
+2. **video**: the still (decoded once, looped) with a 48-bar spectrum
+   (`showfreqs`, log frequency, cube-root amplitude, +3 dB/octave tilt) in
+   white with the bars' brightness as alpha, under the text, and a white
+   progress bar sliding in along the bottom edge (`t / duration`). Encoded like
+   the scene style: H.264 High, VBR ~8 Mbps, closed GOP of half the frame rate,
+   bt709 yuv420p, AAC-LC 192k 48 kHz stereo, `+faststart`.
+
+Speed: 60 s of audio took ~15 s on the NAS (GTX 1650 SUPER, NVENC) while a
+scene render held most cores and two NVENC sessions; a 3-minute track took
+~18 s on an idle desktop GPU.
+
 ## Scene style
 
 `style: "scene"` (API only for now, or `TRACKED_STYLE=scene` for tracked's
@@ -176,7 +266,8 @@ A single Node/TypeScript service (Hono + `@hono/node-server`):
   logs (with `meta` for tracked-origin jobs and the privacy YouTube applied),
   push subscriptions, JWKS cache.
 - **tracked poller** — `lib/tracked.ts`: claims sets from tracked's queue when
-  idle, hands them to the pipeline, reports outcomes (see above).
+  idle, and track uploads one at a time (`pollTrackUploads`), hands them to the
+  pipeline, reports outcomes (see above).
 - **GPU** — NVIDIA passthrough for NVENC.
 
 ## Deployment

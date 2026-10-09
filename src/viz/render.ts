@@ -88,7 +88,7 @@ const PARTIAL_RE = /^seg-\d{5}\.mp4\.partial$/
  * 8M VBR measured SSIM 0.986 against that output (0.9886 for cq 19 re-encoded),
  * half the bytes with no visible difference.
  */
-const VIZ_ENC: Record<VizEncoder, readonly string[]> = {
+export const VIZ_ENC: Record<VizEncoder, readonly string[]> = {
   nvenc: ['-c:v', 'h264_nvenc', '-preset', 'p6', '-tune', 'hq', '-rc', 'vbr', '-b:v', '8M', '-maxrate', '12M', '-bufsize', '16M',
     '-spatial-aq', '1', '-profile:v', 'high', '-coder', 'cabac', '-bf', '2'],
   x264: ['-c:v', 'libx264', '-preset', 'medium', '-b:v', '8M', '-maxrate', '12M', '-bufsize', '16M',
@@ -104,7 +104,7 @@ export function encodeSignature(encoder: VizEncoder, fps: number): string {
 }
 
 /** Half a second: YouTube asks for a closed GOP of half the frame rate. */
-function gopFor(fps: number): number {
+export function gopFor(fps: number): number {
   return Math.max(1, Math.round(fps / 2))
 }
 

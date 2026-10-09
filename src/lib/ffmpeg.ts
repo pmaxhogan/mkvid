@@ -36,6 +36,7 @@ export interface RenderArgs {
 export function buildRenderArgs(a: RenderArgs): string[] {
   // The scene style is drawn frame by frame (src/viz/render.ts), not by a filter graph.
   if (a.style === 'scene') throw new Error('the scene style renders through src/viz/render.ts')
+  if (a.style === 'track') throw new Error('the track style renders through src/lib/track-render.ts')
   const [, height] = a.size.split('x')
   const base = ['-nostdin', '-hide_banner', '-loglevel', 'warning', '-y', '-progress', 'pipe:1', '-nostats']
   let inputArgs: string[]; let filter: string; let mapArgs: string[]; let gop: string[]

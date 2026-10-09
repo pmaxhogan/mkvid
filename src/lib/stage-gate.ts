@@ -15,7 +15,13 @@
 
 import type { StageKey } from './render-progress.js'
 
-export type GateStage = StageKey
+/**
+ * `track-render`: the render of a track upload (the `track` style) has a slot
+ * of its own, so a 5-minute track never waits behind an hours-long scene
+ * render. It shares download and upload with every other job (tracked.ts
+ * pollTrackUploads explains why).
+ */
+export type GateStage = StageKey | 'track-render'
 
 interface Slot { capacity: number; holders: string[]; waiters: Array<{ jobId: string; wake: () => void }> }
 

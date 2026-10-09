@@ -40,6 +40,10 @@ function fakeClient(requests: TrackedRequest[] = []): TrackedClient & { calls: A
     async complete(input) { calls.push(['complete', input]); return { status: 'done' } },
     async fail(input) { calls.push(['fail', input]) },
     async health() { return { ok: true, verifiedLists: true } },
+    async trackClaim() { return null },
+    async trackJob() {},
+    async trackComplete() { return {} },
+    async trackFail() {},
   }
 }
 
@@ -62,7 +66,7 @@ const connected = (ctx: ReturnType<typeof buildContext>) =>
 
 describe('config', () => {
   it('parses the tracked settings, trims the URL, defaults poll + privacy', () => {
-    expect(cfg.tracked).toEqual({ url: 'https://tracked.example', token: 'mk', pollSeconds: 60, privacy: 'unlisted', style: 'static', spreadAccounts: false })
+    expect(cfg.tracked).toEqual({ url: 'https://tracked.example', token: 'mk', pollSeconds: 60, privacy: 'unlisted', style: 'static', spreadAccounts: false, tracks: true })
     expect(loadConfig({ TRACKED_URL: 'x', TRACKED_TOKEN: 't', TRACKED_SPREAD_ACCOUNTS: '1' } as any).tracked!.spreadAccounts).toBe(true)
     expect(loadConfig({} as any).tracked).toBeNull()
     expect(loadConfig({ TRACKED_URL: 'x' } as any).tracked).toBeNull()

@@ -109,7 +109,7 @@ export function downloadAudio(
     p.stderr.on('data', (c) => { err += c.toString(); handle(c) })
     p.on('error', reject)
     p.on('close', (code) => {
-      if (code !== 0) return reject(new Error(`yt-dlp exit ${code}: ${err.slice(-2000)}`))
+      if (code !== 0) return reject(new Error(`yt-dlp exit ${code}: ${err.slice(-1800)}`))
       const picked = pickDownloadedFile(opts.workDir)
       if (!picked) return reject(new Error('yt-dlp produced no audio file'))
       let pageUrl: string | null = null

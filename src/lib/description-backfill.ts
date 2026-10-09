@@ -103,7 +103,7 @@ export function isMkvidDescription(description: string, job: Pick<Job, 'url' | '
   const text = description.replace(/\r\n/g, '\n').trim()
   if (text === `Uploaded by mkvid from ${job.url}` || text === 'Uploaded by mkvid') return true
   const lines = text.split('\n')
-  if (lines[0] !== `Tracklist: ${job.meta?.setUrl}` || !lines[1]?.startsWith('Recording: ')) return false
+  if (job.meta?.origin !== 'tracked' || lines[0] !== `Tracklist: ${job.meta.setUrl}` || !lines[1]?.startsWith('Recording: ')) return false
   const rest = lines.slice(2).join('\n').trim()
   return rest === '' || (rest.startsWith(LEGACY_PARAGRAPH) && !rest.includes('\n'))
 }

@@ -38,8 +38,12 @@ export interface Config {
    * (`preferAccount`), so two sets that reach the upload stage together tend
    * to upload through different Google projects. tracked honours it only
    * while that account has claims left today; an older tracked ignores it.
+   * `tracks` (TRACKED_TRACKS, default on): also claim tracked's track uploads
+   * (`/mkvid/track/*`, rendered with the `track` style) once tracked's
+   * /mkvid/health says `trackUploads: true`. Off = never claim one; outcomes
+   * of track jobs already here are still reported.
    */
-  tracked: { url: string; token: string; pollSeconds: number; privacy: Privacy; style: WaveStyle; spreadAccounts: boolean } | null
+  tracked: { url: string; token: string; pollSeconds: number; privacy: Privacy; style: WaveStyle; spreadAccounts: boolean; tracks: boolean } | null
   /**
    * The `scene` style (src/viz). `workers` drawing threads (default usable cores - 2, never more than
    * the usable cores: src/lib/cpu),
@@ -125,6 +129,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           // static until switched: the scene style changes what tracked's videos look like.
           style: WAVE_STYLES.includes(env.TRACKED_STYLE as WaveStyle) ? env.TRACKED_STYLE as WaveStyle : 'static',
           spreadAccounts: truthy(env.TRACKED_SPREAD_ACCOUNTS),
+          tracks: env.TRACKED_TRACKS === undefined || env.TRACKED_TRACKS.trim() === '' ? true : truthy(env.TRACKED_TRACKS.trim().toLowerCase()),
         }
       : null,
     viz: {

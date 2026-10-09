@@ -1,7 +1,7 @@
 import { open, stat } from 'node:fs/promises'
 import { google } from 'googleapis'
 import { OAuth2Client } from 'google-auth-library'
-import type { Job, Privacy, TokenStore, UploadAccount } from '../types.js'
+import { isSetJob, type Job, type Privacy, type TokenStore, type UploadAccount } from '../types.js'
 import type { Config } from '../config.js'
 import { getValidAccessToken, type TokenOptions } from './google-oauth.js'
 
@@ -322,7 +322,8 @@ export async function deleteVideo(
 ): Promise<{ outcome: DeleteOutcome; jobId: string; account: UploadAccount }> {
   const uploads = deps.jobs.findByVideoId(videoId)
   if (!uploads.length) throw new DeleteRefused('unknown_video', `mkvid has no record of uploading ${videoId}`)
-  const tracked = uploads.filter((j) => j.meta?.origin === 'tracked')
+  // Sets only: tracked never asks to delete a track upload (it has no "recreate" for those).
+  const tracked = uploads.filter(isSetJob)
   if (!tracked.length) throw new DeleteRefused('not_tracked', `${videoId} was not uploaded for tracked`)
   const job = deps.requestId ? tracked.find((j) => j.meta?.requestId === deps.requestId) : tracked[0]
   if (!job) throw new DeleteRefused('request_mismatch', `${videoId} was not uploaded for request ${deps.requestId}`)

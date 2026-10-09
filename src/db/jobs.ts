@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import type { Job, JobMeta, JobStatus, Privacy, WaveStyle } from '../types.js'
+import { isSetJob, isTrackJob, type Job, type JobMeta, type JobStatus, type Privacy, type SetJob, type TrackJob, type WaveStyle } from '../types.js'
 
 const RUNNING: JobStatus[] = ['downloading', 'transcoding', 'uploading', 'queued']
 
@@ -98,24 +98,31 @@ export function makeJobsRepo(db: Database.Database) {
     setMeta(id: string, meta: JobMeta | null) {
       db.prepare('UPDATE jobs SET meta=@m, updated_at=@t WHERE id=@id').run({ id, m: meta ? JSON.stringify(meta) : null, t: now() })
     },
-    /**
-     * Jobs that came from tracked, have reached a final state, and whose
-     * outcome has not been delivered yet — what the poller reports on every
-     * tick until the Worker has acknowledged each one.
-     */
-    /** tracked jobs queued or running here, oldest first. */
-    inFlightTracked(): Job[] {
+    /** tracked sets queued or running here, oldest first (track uploads: inFlightTrackedTracks). */
+    inFlightTracked(): SetJob[] {
       const ph = RUNNING.map(() => '?').join(',')
       return (db.prepare(`SELECT * FROM jobs WHERE meta IS NOT NULL AND status IN (${ph}) ORDER BY created_at ASC`).all(...RUNNING) as any[])
         .map(row)
-        .filter((j) => j.meta?.origin === 'tracked')
+        .filter(isSetJob)
     },
+    /** tracked track uploads queued or running here, oldest first. */
+    inFlightTrackedTracks(): TrackJob[] {
+      const ph = RUNNING.map(() => '?').join(',')
+      return (db.prepare(`SELECT * FROM jobs WHERE meta IS NOT NULL AND status IN (${ph}) ORDER BY created_at ASC`).all(...RUNNING) as any[])
+        .map(row)
+        .filter(isTrackJob)
+    },
+    /**
+     * Jobs that came from tracked (sets and track uploads), have reached a
+     * final state, and whose outcome has not been delivered yet — what the
+     * poller reports on every tick until the Worker has acknowledged each one.
+     */
     listUnreportedTracked(): Job[] {
       const finals: JobStatus[] = ['done', 'failed', 'interrupted']
       const ph = finals.map(() => '?').join(',')
       return (db.prepare(`SELECT * FROM jobs WHERE meta IS NOT NULL AND status IN (${ph}) ORDER BY created_at ASC`).all(...finals) as any[])
         .map(row)
-        .filter((j) => j.meta?.origin === 'tracked' && !j.meta.reported)
+        .filter((j) => (isSetJob(j) || isTrackJob(j)) && !j.meta.reported)
     },
     /** Back to `queued` for a retry: the error is cleared, the video (none, for a failed job) kept. */
     requeue(id: string) {
